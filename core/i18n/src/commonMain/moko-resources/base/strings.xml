@@ -659,5 +659,15 @@
     <string name="dark_theme_on">Always on</string>
     <string name="blocked_image">Blocked image</string>
     <string name="show_blocked_image">Show blocked image</string>
+    <string name="sign_in_via_cookies">Sign in via Cookies</string>
+    <string name="cookie_sign_in_tip">Enter your ipb_member_id and ipb_pass_hash (igneous is optional for ExHentai), or paste exported cookies from clipboard.</string>
+    <string name="cookie_sign_in_paste_from_clipboard">Paste from clipboard</string>
+    <string name="cookie_sign_in_paste_success">Cookies parsed from clipboard</string>
+    <string name="cookie_sign_in_paste_empty">No valid identity cookies found in clipboard</string>
+    <string name="cookie_ipb_member_id">ipb_member_id</string>
+    <string name="cookie_ipb_pass_hash">ipb_pass_hash</string>
+    <string name="cookie_igneous_optional">igneous (optional)</string>
+    <string name="error_cookie_cannot_empty">Cookie cannot be empty</string>
+    <string name="error_cookie_invalid_format">Invalid cookie format (contains spaces or illegal characters)</string>
     <!-- Tachiyomi Reader End-->
 </resources>

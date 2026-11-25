@@ -20,6 +20,7 @@ object EhCookieStore : CookiesStorage {
     const val KEY_IPB_MEMBER_ID = "ipb_member_id"
     const val KEY_IPB_PASS_HASH = "ipb_pass_hash"
     const val KEY_IGNEOUS = "igneous"
+    private const val COOKIE_PERSIST_MAX_AGE = 365 * 24 * 60 * 60
     private const val KEY_HATH_PERKS = "hath_perks"
     private const val KEY_CONTENT_WARNING = "nw"
     private const val CONTENT_WARNING_NOT_SHOW = "1"
@@ -52,6 +53,33 @@ object EhCookieStore : CookiesStorage {
     fun isCloudflareBypassed() = manager.getCookies(urlE)?.containsKey("cf_clearance") == true
 
     fun flush() = manager.flush()
+
+    /**
+     * 清空旧会话 Cookie 并以持久化属性写入 E-Hentai 与 ExHentai 身份 Cookie。
+     */
+    suspend fun setIdentityCookies(
+        ipbMemberId: String,
+        ipbPassHash: String,
+        igneous: String?,
+    ) {
+        manager.clearAllCookies()
+        fun buildCookie(name: String, value: String, domain: String) = Cookie(
+            name = name,
+            value = value,
+            maxAge = COOKIE_PERSIST_MAX_AGE,
+            domain = domain,
+            path = "/",
+            secure = true,
+        )
+        manager.setCookie(urlE, buildCookie(KEY_IPB_MEMBER_ID, ipbMemberId, urlE.host))
+        manager.setCookie(urlE, buildCookie(KEY_IPB_PASS_HASH, ipbPassHash, urlE.host))
+        manager.setCookie(urlEx, buildCookie(KEY_IPB_MEMBER_ID, ipbMemberId, urlEx.host))
+        manager.setCookie(urlEx, buildCookie(KEY_IPB_PASS_HASH, ipbPassHash, urlEx.host))
+        igneous?.takeIf { it.isNotBlank() }?.let {
+            manager.setCookie(urlEx, buildCookie(KEY_IGNEOUS, it, urlEx.host))
+        }
+        manager.flush()
+    }
 
     // See https://github.com/Ehviewer-Overhauled/Ehviewer/issues/873
     override suspend fun addCookie(requestUrl: Url, cookie: Cookie) {

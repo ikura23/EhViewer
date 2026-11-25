@@ -641,5 +641,15 @@
     <string name="pref_crop_borders">裁剪边缘</string>
     <string name="blocked_image">已屏蔽的图片</string>
     <string name="show_blocked_image">显示已屏蔽的图片</string>
+    <string name="sign_in_via_cookies">通过 Cookie 登录</string>
+    <string name="cookie_sign_in_tip">请输入 ipb_member_id 与 ipb_pass_hash（igneous 为里站选填项），或点击下方按钮直接从剪贴板识别填入。</string>
+    <string name="cookie_sign_in_paste_from_clipboard">从剪贴板识别填入</string>
+    <string name="cookie_sign_in_paste_success">已从剪贴板识别并填入 Cookie</string>
+    <string name="cookie_sign_in_paste_empty">剪贴板中未识别到有效的身份 Cookie</string>
+    <string name="cookie_ipb_member_id">ipb_member_id</string>
+    <string name="cookie_ipb_pass_hash">ipb_pass_hash</string>
+    <string name="cookie_igneous_optional">igneous（选填）</string>
+    <string name="error_cookie_cannot_empty">此 Cookie 不能为空</string>
+    <string name="error_cookie_invalid_format">Cookie 格式无效（请勿包含空格、分号或换行）</string>
     <!-- Tachiyomi Reader End-->
 </resources>

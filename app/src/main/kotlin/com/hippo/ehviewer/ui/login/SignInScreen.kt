@@ -5,6 +5,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -70,6 +71,7 @@ import com.hippo.ehviewer.client.EhEngine
 import com.hippo.ehviewer.client.EhUrl
 import com.hippo.ehviewer.client.EhUtils
 import com.hippo.ehviewer.ui.Screen
+import com.hippo.ehviewer.ui.destinations.CookieSignInScreenDestination
 import com.hippo.ehviewer.ui.destinations.WebViewSignInScreenDestination
 import com.hippo.ehviewer.ui.openBrowser
 import com.hippo.ehviewer.ui.tools.awaitConfirmationOrCancel
@@ -176,6 +178,33 @@ fun AnimatedVisibilityScope.SignInScreen(navigator: DestinationsNavigator) = Scr
         )
     }
 
+    @Composable
+    fun SignInAuxiliaryActions(modifier: Modifier = Modifier) {
+        @Composable
+        fun UnderlinedTextButton(textRes: Int, onClick: () -> Unit) {
+            TextButton(onClick = onClick, shapes = ButtonDefaults.shapes()) {
+                Text(
+                    text = buildAnnotatedString {
+                        withStyle(style = SpanStyle(textDecoration = TextDecoration.Underline)) {
+                            append(stringResource(id = textRes))
+                        }
+                    },
+                )
+            }
+        }
+        FlowRow(
+            modifier = modifier,
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+        ) {
+            UnderlinedTextButton(R.string.sign_in_via_webview) { navigate(WebViewSignInScreenDestination) }
+            UnderlinedTextButton(R.string.sign_in_via_cookies) { navigate(CookieSignInScreenDestination) }
+            UnderlinedTextButton(R.string.guest_mode) {
+                Settings.gallerySite.value = EhUrl.SITE_E
+                Settings.needSignIn.value = false
+            }
+        }
+    }
+
     Box(contentAlignment = Alignment.Center) {
         when {
             !windowSizeClass.isExpanded -> {
@@ -216,41 +245,7 @@ fun AnimatedVisibilityScope.SignInScreen(navigator: DestinationsNavigator) = Scr
                             Text(text = stringResource(id = R.string.sign_in))
                         }
                     }
-                    Row(modifier = Modifier.padding(horizontal = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TextButton(
-                            onClick = { navigate(WebViewSignInScreenDestination) },
-                            shapes = ButtonDefaults.shapes(),
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Text(
-                                text = buildAnnotatedString {
-                                    withStyle(
-                                        style = SpanStyle(textDecoration = TextDecoration.Underline),
-                                    ) {
-                                        append(stringResource(id = R.string.sign_in_via_webview))
-                                    }
-                                },
-                            )
-                        }
-                        TextButton(
-                            onClick = {
-                                Settings.gallerySite.value = EhUrl.SITE_E
-                                Settings.needSignIn.value = false
-                            },
-                            shapes = ButtonDefaults.shapes(),
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Text(
-                                text = buildAnnotatedString {
-                                    withStyle(
-                                        style = SpanStyle(textDecoration = TextDecoration.Underline),
-                                    ) {
-                                        append(stringResource(id = R.string.guest_mode))
-                                    }
-                                },
-                            )
-                        }
-                    }
+                    SignInAuxiliaryActions(modifier = Modifier.padding(horizontal = 4.dp))
                 }
             }
             else -> {
@@ -302,41 +297,7 @@ fun AnimatedVisibilityScope.SignInScreen(navigator: DestinationsNavigator) = Scr
                             }
                         }
                         Spacer(modifier = Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.Center) {
-                            TextButton(
-                                onClick = { navigate(WebViewSignInScreenDestination) },
-                                shapes = ButtonDefaults.shapes(),
-                                modifier = Modifier.padding(horizontal = 4.dp).width(128.dp),
-                            ) {
-                                Text(
-                                    text = buildAnnotatedString {
-                                        withStyle(
-                                            style = SpanStyle(textDecoration = TextDecoration.Underline),
-                                        ) {
-                                            append(stringResource(id = R.string.sign_in_via_webview))
-                                        }
-                                    },
-                                )
-                            }
-                            TextButton(
-                                onClick = {
-                                    Settings.gallerySite.value = EhUrl.SITE_E
-                                    Settings.needSignIn.value = false
-                                },
-                                shapes = ButtonDefaults.shapes(),
-                                modifier = Modifier.padding(horizontal = 4.dp).width(128.dp),
-                            ) {
-                                Text(
-                                    text = buildAnnotatedString {
-                                        withStyle(
-                                            style = SpanStyle(textDecoration = TextDecoration.Underline),
-                                        ) {
-                                            append(stringResource(id = R.string.guest_mode))
-                                        }
-                                    },
-                                )
-                            }
-                        }
+                        SignInAuxiliaryActions(modifier = Modifier.padding(horizontal = 4.dp))
                     }
                 }
             }

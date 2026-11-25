@@ -619,5 +619,15 @@
     <string name="dark_theme_off">總是關閉</string>
     <string name="dark_theme_on">總是開啟</string>
     <string name="pref_crop_borders">邊緣裁剪</string>
+    <string name="sign_in_via_cookies">透過 Cookie 登入</string>
+    <string name="cookie_sign_in_tip">請輸入 ipb_member_id 與 ipb_pass_hash（igneous 為選填項），或點擊下方按鈕從剪貼簿自動識別填入。</string>
+    <string name="cookie_sign_in_paste_from_clipboard">從剪貼簿識別填入</string>
+    <string name="cookie_sign_in_paste_success">已從剪貼簿識別並填入 Cookie</string>
+    <string name="cookie_sign_in_paste_empty">剪貼簿中未找到有效的身分 Cookie</string>
+    <string name="cookie_ipb_member_id">ipb_member_id</string>
+    <string name="cookie_ipb_pass_hash">ipb_pass_hash</string>
+    <string name="cookie_igneous_optional">igneous（選填）</string>
+    <string name="error_cookie_cannot_empty">此 Cookie 不能為空</string>
+    <string name="error_cookie_invalid_format">Cookie 格式無效（請勿包含空格、分號或換行）</string>
     <!-- Tachiyomi Reader End-->
 </resources>
