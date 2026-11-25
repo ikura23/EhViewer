@@ -189,9 +189,11 @@ object LocalGalleryScanner {
             }
         }
 
-        // 通道一：免 AllFilesAccess 直接通过 downloadLocation 扫描当前配置的下载目录（兼容 SAF 与物理路径）
+        // 通道一：扫描用户当前配置的下载目录；具备所有文件访问权限且可解析为物理路径时优先直扫物理目录
         if (extraRoots.isEmpty()) {
-            val currentDownloadDir = runCatching { downloadLocation }.getOrNull()
+            val physicalConfiguredDir = configuredRoot?.takeIf { hasAllFilesAccess() }?.toPath()
+                ?.takeIf { runCatching { it.isDirectory }.getOrDefault(false) }
+            val currentDownloadDir = physicalConfiguredDir ?: runCatching { downloadLocation }.getOrNull()
             if (currentDownloadDir != null && runCatching { currentDownloadDir.isDirectory }.getOrDefault(false)) {
                 rootCount++
                 val children = runCatching { currentDownloadDir.list() }.getOrDefault(emptyList())
@@ -199,9 +201,10 @@ object LocalGalleryScanner {
                 for (entry in children) {
                     val isDir = runCatching { entry.isDirectory }.getOrDefault(false)
                     if (isDir) {
-                        if (!looksLikeGallery(entry)) continue
+                        val subEntries = runCatching { entry.list() }.getOrNull() ?: continue
+                        if (!looksLikeGalleryFromEntries(subEntries)) continue
                         scanned++
-                        val item = runCatching { readLocalItem(entry) }.getOrNull()
+                        val item = runCatching { readLocalItem(entry, subEntries) }.getOrNull()
                         if (item != null) {
                             val forcedTarget = resolveConfiguredEntryTarget(
                                 entry = entry,
@@ -215,20 +218,31 @@ object LocalGalleryScanner {
                             markProcessed(processedPaths, entry, configuredRoot)
                         }
                         updateScanningProgress(children.size)
-                    } else if (isArchiveFile(entry) && isReadableArchivePath(entry)) {
+                    } else if (isArchiveFile(entry)) {
+                        val resolvedArchive = resolvePhysicalArchivePath(entry, configuredRoot)
+                        val archiveTargetPath = resolvedArchive ?: entry
+                        if (!archiveTargetPath.toString().startsWith("/")) continue
+                        val archiveTarget = resolveConfiguredEntryTarget(
+                            entry = archiveTargetPath,
+                            isArchive = true,
+                            configuredRoot = configuredRoot,
+                            appDownloadRoots = appDownloadRoots,
+                        )
+                        val handledFast = handleExistingArchiveFast(archiveTargetPath, archiveTarget)
+                        if (handledFast) {
+                            scanned++
+                            markProcessed(processedPaths, archiveTargetPath, configuredRoot)
+                            updateScanningProgress(children.size)
+                            continue
+                        }
+                        if (!isReadableArchivePath(archiveTargetPath)) continue
                         scanned++
-                        val item = runCatching { readArchiveItem(entry) }.getOrNull()
+                        val item = runCatching { readArchiveItem(archiveTargetPath) }.getOrNull()
                         if (item != null) {
-                            val forcedTarget = resolveConfiguredEntryTarget(
-                                entry = entry,
-                                isArchive = true,
-                                configuredRoot = configuredRoot,
-                                appDownloadRoots = appDownloadRoots,
-                            )
-                            if (importItem(item, entry, isArchive = true, configuredRoot = configuredRoot, appDownloadRoots = appDownloadRoots, overrideTarget = forcedTarget) == true) {
+                            if (importItem(item, archiveTargetPath, isArchive = true, configuredRoot = configuredRoot, appDownloadRoots = appDownloadRoots, overrideTarget = archiveTarget) == true) {
                                 imported++
                             }
-                            markProcessed(processedPaths, entry, configuredRoot)
+                            markProcessed(processedPaths, archiveTargetPath, configuredRoot)
                         }
                         updateScanningProgress(children.size)
                     }
@@ -255,11 +269,11 @@ object LocalGalleryScanner {
                     for (entry in entries) {
                         val entryKey = canonicalPath(entry)
                         if (entry.isDirectory) {
-                            val gallery = looksLikeGallery(entry)
-                            if (gallery) {
+                            val subEntries = runCatching { entry.list() }.getOrNull()
+                            if (subEntries != null && looksLikeGalleryFromEntries(subEntries)) {
                                 if (entryKey in processedPaths) continue
                                 scanned++
-                                val item = runCatching { readLocalItem(entry) }.getOrNull()
+                                val item = runCatching { readLocalItem(entry, subEntries) }.getOrNull()
                                 if (item != null) {
                                     if (importItem(item, entry, isArchive = false, configuredRoot = configuredRoot, appDownloadRoots = appDownloadRoots) == true) {
                                         imported++
@@ -277,10 +291,23 @@ object LocalGalleryScanner {
                         }
 
                         if (!isArchiveFile(entry) || entryKey in processedPaths) continue
+                        if (!entry.toString().startsWith("/")) continue
+                        val target = resolveImportTarget(
+                            entryCanonicalPath = entryKey,
+                            configuredDownloadRoot = configuredRoot,
+                            appDownloadRoots = appDownloadRoots,
+                            isArchive = true,
+                        )
+                        if (handleExistingArchiveFast(entry, target)) {
+                            scanned++
+                            processedPaths += entryKey
+                            updateScanningProgress(scanned + pending.size)
+                            continue
+                        }
                         if (!isReadableArchivePath(entry)) continue
                         scanned++
                         val item = runCatching { readArchiveItem(entry) }.getOrNull() ?: continue
-                        if (importItem(item, entry, isArchive = true, configuredRoot = configuredRoot, appDownloadRoots = appDownloadRoots) == true) {
+                        if (importItem(item, entry, isArchive = true, configuredRoot = configuredRoot, appDownloadRoots = appDownloadRoots, overrideTarget = target) == true) {
                             imported++
                         }
                         processedPaths += entryKey
@@ -298,6 +325,32 @@ object LocalGalleryScanner {
             roots = rootCount,
             metadataUpdated = metadataUpdated,
         )
+    }
+
+    private fun resolvePhysicalArchivePath(entry: Path, configuredRoot: String?): Path? {
+        if (entry.toString().startsWith("/")) return entry
+        val root = configuredRoot ?: return null
+        val candidate = File(root, entry.name)
+        return candidate.takeIf { it.isFile }?.toOkioPath()
+    }
+
+    /**
+     * 对已在库中的 `.cbz`/`.zip` 压缩包跳过耗时的 Zip 目录/封面重读；
+     * 若它位于应用下载目录内，顺手纠偏清除残留的“本地”标签。
+     */
+    private suspend fun handleExistingArchiveFast(entry: Path, target: ImportTarget): Boolean {
+        val gid = stableLocalArchiveGid(canonicalPath(entry))
+        val existing = DownloadManager.getDownloadInfo(gid) ?: return false
+        if (existing.state == DownloadInfo.STATE_FINISH && target.isInsideAppDownloadDir) {
+            runCatching {
+                DownloadManager.normalizeAppDownloadEntry(
+                    gid = gid,
+                    dirname = target.dirname,
+                    pages = existing.pages,
+                )
+            }
+        }
+        return true
     }
 
     private fun markProcessed(processedPaths: MutableSet<String>, entry: Path, configuredRoot: String?) {
@@ -470,15 +523,17 @@ object LocalGalleryScanner {
         }.getOrDefault(false)
     }
 
+    private fun looksLikeGalleryFromEntries(entries: List<Path>): Boolean = entries.any {
+        it.name == COMIC_INFO_FILE ||
+            it.name == SPIDER_INFO_FILENAME ||
+            (
+                it.name.lowercase() != "thumb.webp" &&
+                    it.name.substringAfterLast('.', "").lowercase() in IMAGE_EXTENSIONS
+                )
+    }
+
     private fun looksLikeGallery(dir: Path): Boolean = runCatching {
-        dir.list().any {
-            it.name == COMIC_INFO_FILE ||
-                it.name == SPIDER_INFO_FILENAME ||
-                (
-                    it.name.lowercase() != "thumb.webp" &&
-                        it.name.substringAfterLast('.', "").lowercase() in IMAGE_EXTENSIONS
-                    )
-        }
+        looksLikeGalleryFromEntries(dir.list())
     }.getOrDefault(false)
 
     private fun discoverRoots(storage: Path, configuredRoot: String? = null): List<Path> {
@@ -753,9 +808,12 @@ object LocalGalleryScanner {
         return merged.toList().ifEmpty { null }
     }
 
-    private fun readLocalItem(dir: Path): LocalItem? {
-        val spider = dir.find(SPIDER_INFO_FILENAME)?.let { readCompatFromPath(it) }
-        val comic = dir.find(COMIC_INFO_FILE)?.let { readComicInfo(it) }
+    private fun readLocalItem(dir: Path, prelistedEntries: List<Path>? = null): LocalItem? {
+        val entries = prelistedEntries ?: runCatching { dir.list() }.getOrDefault(emptyList())
+        if (entries.isEmpty()) return null
+
+        val spider = entries.firstOrNull { it.name == SPIDER_INFO_FILENAME }?.let { readCompatFromPath(it) }
+        val comic = entries.firstOrNull { it.name == COMIC_INFO_FILE }?.let { readComicInfo(it) }
         val parsed = comic?.web?.let { GalleryDetailUrlParser.parse(it) }
 
         // 旧版或第三方目录可能以 "gid-token"、"gid_token" 或 "gid-标题" 命名
@@ -771,8 +829,18 @@ object LocalGalleryScanner {
             ?: rawFolderSuffix.takeIf(::isValidGalleryHexToken)
             ?: ""
 
-        // 只要目录内存在有效图片即可导入本地记录；已有未完成下载的任务在 importItem 中受 state != STATE_FINISH 保护
-        val actualPages = countPages(dir)
+        // 单次复用已列出的目录条目筛选自然排序真实图片，消除重复目录遍历与文件 stat
+        val isPhysicalDir = dir.toString().startsWith("/")
+        val imageEntries = entries.filter { entry ->
+            val ext = entry.name.substringAfterLast('.', "").lowercase()
+            if (entry.name.equals("thumb.webp", ignoreCase = true) || ext !in IMAGE_EXTENSIONS) {
+                return@filter false
+            }
+            if (isPhysicalDir) File(entry.toString()).isFile else entry.isFile
+        }.sortedWith { a, b ->
+            LocalFolderPageLoader.NATURAL_NAME_COMPARATOR.compare(a.name, b.name)
+        }
+        val actualPages = imageEntries.size
         if (actualPages <= 0) return null
         val pages = actualPages
 
@@ -787,7 +855,7 @@ object LocalGalleryScanner {
 
         // 只读扫描目录，不修改磁盘原有 .ehviewer 文件。
         // 仅当第一张真实图片不是动图时生成静态封面缓存；动图直接交由列表页播放原图。
-        val firstImage = LocalFolderPageLoader.imageFiles(dir).firstOrNull()
+        val firstImage = imageEntries.firstOrNull()
         if (firstImage != null) {
             info.thumbKey = firstImage.name
             writeLocalThumb(firstImage, gid)

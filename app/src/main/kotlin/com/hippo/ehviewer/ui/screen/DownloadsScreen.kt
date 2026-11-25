@@ -170,12 +170,6 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
     val scanProgress by LocalGalleryScanner.scanProgress.collectAsState()
     val showTagTranslations by Settings.showTagTranslations.collectAsState()
 
-    LaunchedEffect(Unit) {
-        // 无论是否具备所有文件权限，进入下载页都先自动识别用户当前设置的下载目录
-        LocalGalleryScanner.launchScanInBackground(
-            onlyConfiguredDownloadDir = !LocalGalleryScanner.hasAllFilesAccess(),
-        )
-    }
     LaunchedEffect(showTagTranslations, EhTagDatabase.initialized) {
         if (showTagTranslations && EhTagDatabase.translatable && !EhTagDatabase.initialized) {
             EhTagDatabase.ensureInitialized()

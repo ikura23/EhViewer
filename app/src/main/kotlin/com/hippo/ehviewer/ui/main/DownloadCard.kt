@@ -3,6 +3,8 @@ package com.hippo.ehviewer.ui.main
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.drawable.Animatable
+import android.graphics.drawable.Drawable
+import android.os.Environment
 import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -58,6 +60,8 @@ import coil3.request.ImageRequest
 import coil3.request.crossfade
 import com.ehviewer.core.database.model.DownloadInfo
 import com.ehviewer.core.files.isFile
+import com.ehviewer.core.files.list
+import com.ehviewer.core.files.toUri
 import com.ehviewer.core.i18n.R
 import com.ehviewer.core.ui.component.CrystalCard
 import com.ehviewer.core.ui.component.GalleryListCardRating
@@ -66,11 +70,13 @@ import com.ehviewer.core.ui.util.listThumbGenerator
 import com.hippo.ehviewer.EhDB
 import com.hippo.ehviewer.client.EhUtils
 import com.hippo.ehviewer.download.DownloadManager
+import com.hippo.ehviewer.download.LocalGalleryScanner
 import com.hippo.ehviewer.download.archiveThumbPath
 import com.hippo.ehviewer.download.downloadDir
 import com.hippo.ehviewer.download.isAnimatedImageFile
 import com.hippo.ehviewer.download.isAnimatedImageHeader
 import com.hippo.ehviewer.download.isLocal
+import com.hippo.ehviewer.download.resolveDownloadLocationPath
 import com.hippo.ehviewer.gallery.LocalFolderPageLoader
 import com.hippo.ehviewer.util.AppConfig
 import com.hippo.ehviewer.util.FileUtils
@@ -78,6 +84,7 @@ import java.io.File
 import java.util.zip.ZipFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okio.Path.Companion.toPath
 
 @Composable
 context(_: SharedTransitionScope, _: TransitionsVisibilityScope)
@@ -216,7 +223,8 @@ fun DownloadCard(
                     GalleryListCardRating(rating = info.rating, modifier = Modifier.padding(top = 1.dp, bottom = 3.dp))
                     val categoryColor = EhUtils.getCategoryColor(info.category)
                     val categoryText = EhUtils.getCategory(info.category).uppercase()
-                    val showLocalBadge = info.label == "本地" || info.isLocal
+                    // 仅外部导入并打上“本地”分组的条目显示“本地”徽标；下载目录内条目不展示该徽标
+                    val showLocalBadge = info.label == "本地"
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(
                             text = categoryText,
@@ -283,7 +291,7 @@ fun LocalDownloadThumb(
         val context = LocalContext.current
         val request = remember(resolved, context) {
             ImageRequest.Builder(context)
-                .data(resolved.file)
+                .data(resolved.data)
                 .memoryCacheKey(resolved.cacheKey)
                 .diskCacheKey(resolved.cacheKey)
                 .crossfade(false)
@@ -291,12 +299,24 @@ fun LocalDownloadThumb(
         }
         val painter = rememberAsyncImagePainter(model = request)
         val painterState by painter.state.collectAsState()
-        val animatable = ((painterState as? AsyncImagePainter.State.Success)?.result?.image as? DrawableImage)?.drawable as? Animatable
-        // 列表项复用到可见窗口时自动开启动图播放，离屏回收时及时停止动画释放资源
-        DisposableEffect(animatable) {
-            animatable?.start()
+        if (painterState is AsyncImagePainter.State.Error && fallbackContent != null) {
+            fallbackContent()
+            return
+        }
+        val drawable = ((painterState as? AsyncImagePainter.State.Success)?.result?.image as? DrawableImage)?.drawable
+        // 列表项复用到可见窗口时显式设置可见并开启动图播放，离屏回收时及时停止动画释放资源
+        DisposableEffect(drawable) {
+            val animatable = drawable as? Animatable
+            if (animatable != null) {
+                drawable.setVisible(true, false)
+                animatable.start()
+            }
             onDispose {
-                animatable?.stop()
+                val anim = drawable as? Animatable
+                if (anim != null) {
+                    anim.stop()
+                    drawable.setVisible(false, false)
+                }
             }
         }
         Image(
@@ -313,15 +333,46 @@ fun LocalDownloadThumb(
 }
 
 private data class LocalThumbResult(
-    val file: File,
+    val data: Any,
     val cacheKey: String,
 )
 
 private const val MAX_ANIMATED_THUMB_BYTES = 16L * 1024 * 1024
 
 private fun resolveLocalThumb(info: DownloadInfo, animatedOnly: Boolean): LocalThumbResult? = runCatching {
-    val dir = info.downloadDir ?: return@runCatching null
-    val resolvedFile = if (dir.isFile) {
+    var dir = info.downloadDir ?: return@runCatching null
+    val rawDir = dir.toString()
+    if (rawDir.startsWith("content:") && LocalGalleryScanner.hasAllFilesAccess()) {
+        val physical = resolveDownloadLocationPath(rawDir, Environment.getExternalStorageDirectory().absolutePath)
+        if (physical != null && File(physical).exists()) {
+            dir = physical.toPath()
+        }
+    }
+
+    val isPhysical = dir.toString().startsWith("/")
+    if (!isPhysical) {
+        // SAF content:// 路径绝不能包装成 File；animatedOnly 模式下直接回退远程缩略图防止破图
+        if (animatedOnly) return@runCatching null
+        val cachedJpg = File(AppConfig.localThumbDir.toString(), "${info.gid}.jpg")
+        if (cachedJpg.isFile && isUsableThumb(cachedJpg)) {
+            val key = "local-thumb:${info.gid}:${cachedJpg.absolutePath}:${cachedJpg.lastModified()}:${cachedJpg.length()}"
+            return@runCatching LocalThumbResult(cachedJpg, key)
+        }
+        val imageExts = setOf("jpg", "jpeg", "png", "webp", "gif", "avif")
+        val firstChild = runCatching {
+            dir.list().filter { entry ->
+                !entry.name.equals("thumb.webp", ignoreCase = true) &&
+                    entry.name.substringAfterLast('.', "").lowercase() in imageExts
+            }.minWithOrNull { a, b ->
+                LocalFolderPageLoader.NATURAL_NAME_COMPARATOR.compare(a.name, b.name)
+            }
+        }.getOrNull() ?: return@runCatching null
+        val uri = firstChild.toUri()
+        return@runCatching LocalThumbResult(uri, "local-thumb:${info.gid}:$uri")
+    }
+
+    val physicalFile = File(dir.toString())
+    val candidateFile: File? = if (physicalFile.isFile) {
         val cachePrefix = "${info.gid}-${dir.toString().hashCode().toUInt().toString(16)}"
         val cachedAnim = AppConfig.localThumbDir.toFile().listFiles()?.firstOrNull {
             it.nameWithoutExtension == cachePrefix &&
@@ -348,20 +399,19 @@ private fun resolveLocalThumb(info: DownloadInfo, animatedOnly: Boolean): LocalT
                     archiveThumb
                 } else {
                     archiveThumb.delete()
-                    createArchiveThumb(File(dir.toString()), info.gid, cachePrefix)
+                    createArchiveThumb(physicalFile, info.gid, cachePrefix)
                 }
             }
         }
-    } else {
+    } else if (physicalFile.isDirectory) {
         // 先快速探测首张实际图片是否为真动图：若是，直接播放原动图并跳过静态 .jpg 缓存
         val firstFile = if (animatedOnly) {
             listOf("00000001.gif", "00000001.webp", "001.gif", "001.webp")
                 .asSequence()
-                .map { dir / it }
+                .map { File(physicalFile, it) }
                 .firstOrNull { it.isFile }
-                ?.let { File(it.toString()) }
         } else {
-            LocalFolderPageLoader.imageFiles(dir).firstOrNull()?.let { File(it.toString()) }
+            LocalFolderPageLoader.imageFiles(dir).firstOrNull()?.let { File(it.toString()) }?.takeIf { it.isFile }
         }
         val cachedJpg = File(AppConfig.localThumbDir.toString(), "${info.gid}.jpg")
         if (firstFile != null && firstFile.isFile && firstFile.length() <= MAX_ANIMATED_THUMB_BYTES && isAnimatedImageFile(firstFile)) {
@@ -374,7 +424,10 @@ private fun resolveLocalThumb(info: DownloadInfo, animatedOnly: Boolean): LocalT
         } else {
             firstFile
         }
-    } ?: return@runCatching null
+    } else {
+        null
+    }
+    val resolvedFile = candidateFile ?: return@runCatching null
     val key = "local-thumb:${info.gid}:${resolvedFile.absolutePath}:${resolvedFile.lastModified()}:${resolvedFile.length()}"
     LocalThumbResult(resolvedFile, key)
 }.getOrNull()

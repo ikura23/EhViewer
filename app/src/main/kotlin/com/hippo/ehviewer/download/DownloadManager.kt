@@ -779,7 +779,6 @@ object DownloadManager : CoroutineScope {
     ): Boolean = commandResult {
         val old = mAllInfoMap[gid] ?: return@commandResult false
         if (old.state != DownloadInfo.STATE_FINISH) return@commandResult false
-        if (pages > 0 && old.pages > pages) return@commandResult false
 
         val normalizedLabel = if (old.label == "本地") null else old.label
         val labelChanged = old.label != normalizedLabel

@@ -193,7 +193,7 @@ fun GalleryInfoGridItem(
                     )
                 if (preferLocal) {
                     LocalDownloadThumb(
-                        info = localCandidate!!,
+                        info = localCandidate,
                         animatedOnly = !localCandidate.isLocal && !localCandidate.thumbKey.isNullOrBlank() && '/' in localCandidate.thumbKey!!,
                         modifier = Modifier.aspectRatio(ratio),
                         fallbackContent = {

@@ -515,9 +515,9 @@ class MainActivity : AppCompatActivity() {
                                 }
                             }
                         }
-                        // 全局非阻塞后台扫描进度悬浮条：除阅读器外均可见，不影响浏览榜单或进入画廊
+                        // 全局非阻塞后台扫描进度悬浮条：仅在用户主动触发且非阅读器画面展示，不影响浏览榜单或进入画廊
                         AnimatedVisibility(
-                            visible = scanProgress.running && currentDestination?.route != ReaderScreenDestination.route,
+                            visible = scanProgress.running && scanProgress.lastRunUserInitiated && currentDestination?.route != ReaderScreenDestination.route,
                             enter = fadeIn() + slideInVertically { -it },
                             exit = fadeOut() + slideOutVertically { -it },
                             modifier = Modifier
