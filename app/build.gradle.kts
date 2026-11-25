@@ -1,5 +1,6 @@
 import com.mikepenz.aboutlibraries.plugin.DuplicateMode
 import com.mikepenz.aboutlibraries.plugin.DuplicateRule
+import java.util.Properties
 import java.util.regex.Pattern
 
 val isRelease: Boolean
@@ -15,46 +16,76 @@ plugins {
 }
 
 val supportedAbis = arrayOf("arm64-v8a", "x86_64", "armeabi-v7a")
+val releaseAbi = providers.gradleProperty("releaseAbi").orNull
+require(releaseAbi == null || releaseAbi in supportedAbis || releaseAbi == "universal") {
+    "releaseAbi must be arm64-v8a, armeabi-v7a, x86_64 or universal"
+}
+val buildAbis = releaseAbi?.takeUnless { it == "universal" }?.let { arrayOf(it) } ?: supportedAbis
 
 android {
     splits {
         abi {
-            isEnable = true
+            isEnable = releaseAbi != "universal"
             reset()
             if (isRelease) {
-                include(*supportedAbis)
-                isUniversalApk = true
+                include(*buildAbis)
+                isUniversalApk = releaseAbi == null
             } else {
                 include("arm64-v8a", "x86_64")
             }
         }
     }
 
+    // 优先使用外部私有签名配置或环境变量，均缺失时才回退仓库默认调试签名
+    val signingProperties = Properties().apply {
+        rootProject.file(".private-signing/signing.properties").takeIf { it.isFile }?.inputStream()?.use(::load)
+    }
+    fun signingValue(environment: String, property: String): String? =
+        providers.environmentVariable(environment).orNull ?: signingProperties.getProperty(property)
+
+    val customStorePath = signingValue("SIGNING_STORE_FILE", "storeFile")
+        ?: rootProject.file(".private-signing/androidkey.jks").takeIf { it.isFile }?.absolutePath
+    val customStorePassword = signingValue("SIGNING_STORE_PASSWORD", "storePassword")
+    val customKeyAlias = signingValue("SIGNING_KEY_ALIAS", "keyAlias")
+    val customKeyPassword = signingValue("SIGNING_KEY_PASSWORD", "keyPassword")
+    val hasCustomSigning = customStorePath != null && file(customStorePath).isFile &&
+        !customStorePassword.isNullOrEmpty() &&
+        !customKeyAlias.isNullOrEmpty() &&
+        !customKeyPassword.isNullOrEmpty()
+
     val signConfig = signingConfigs.create("release") {
-        storeFile = File(projectDir.path + "/keystore/androidkey.jks")
-        storePassword = "000000"
-        keyAlias = "key0"
-        keyPassword = "000000"
+        if (hasCustomSigning) {
+            storeFile = file(customStorePath)
+            storePassword = customStorePassword
+            keyAlias = customKeyAlias
+            keyPassword = customKeyPassword
+        } else {
+            storeFile = File(projectDir.path + "/keystore/androidkey.jks")
+            storePassword = "000000"
+            keyAlias = "key0"
+            keyPassword = "000000"
+        }
         enableV3Signing = true
         enableV4Signing = true
     }
 
-    val commitSha = providers.exec {
-        commandLine = "git rev-parse --short=7 HEAD".split(' ')
-    }.standardOutput.asText.get().trim()
+    fun gitValue(vararg args: String, fallback: String): String = runCatching {
+        providers.exec { commandLine = listOf("git", *args) }.standardOutput.asText.get().trim()
+    }.getOrNull()?.takeIf { it.isNotBlank() } ?: fallback
 
-    val commitTime = providers.exec {
-        commandLine = "git log -1 --format=%ct".split(' ')
-    }.standardOutput.asText.get().trim()
-
-    val repoName = providers.exec {
-        commandLine = "git remote get-url origin".split(' ')
-    }.standardOutput.asText.get().trim().removeSuffix(".git").removePrefix("https://codeberg.org/")
+    val commitSha = gitValue("rev-parse", "--short=7", "HEAD", fallback = "unknown")
+    val commitTime = gitValue("log", "-1", "--format=%ct", fallback = "0")
+    val repoName = gitValue("remote", "get-url", "origin", fallback = "ikura23/EhViewer")
+        .removePrefix("https://github.com/")
+        .removePrefix("git@github.com:")
+        .removePrefix("https://codeberg.org/")
+        .removePrefix("git@codeberg.org:")
+        .removeSuffix(".git")
 
     val snapshot = !hasProperty("release")
 
     defaultConfig {
-        applicationId = "moe.tarsin.ehviewer"
+        applicationId = "com.ys.ehviewer"
         versionCode = 180063
         versionName = if (snapshot) {
             "1.15.0-SNAPSHOT"
@@ -67,7 +98,7 @@ android {
         buildConfigField("long", "COMMIT_TIME", commitTime)
         buildConfigField("String", "REPO_NAME", "\"$repoName\"")
         ndk {
-            if (isRelease) {
+            if (isRelease && (releaseAbi == null || releaseAbi == "universal")) {
                 abiFilters.addAll(supportedAbis)
             }
             debugSymbolLevel = "FULL"

@@ -27,7 +27,7 @@ import tachiyomi.data.release.Repository
 import tachiyomi.data.release.WorkflowRuns
 import tachiyomi.data.release.downloadLink
 
-const val API_URL = "https://codeberg.org/api/v1/repos/${BuildConfig.REPO_NAME}"
+const val API_URL = "https://api.github.com/repos/${BuildConfig.REPO_NAME}"
 const val LATEST_RELEASE_URL = "$API_URL/releases/latest"
 
 object AppUpdater {
