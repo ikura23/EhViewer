@@ -181,10 +181,32 @@ fun GalleryInfoGridItem(
                     }
                     mutableFloatStateOf(ratio)
                 }
-                val localInfo = (info as? DownloadInfo)?.takeIf { it.isLocal }
-                    ?: DownloadManager.getDownloadInfo(info.gid)?.takeIf { it.isLocal }
-                if (localInfo != null) {
-                    LocalDownloadThumb(info = localInfo, modifier = Modifier.aspectRatio(ratio))
+                val localCandidate = (info as? DownloadInfo) ?: DownloadManager.getDownloadInfo(info.gid)
+                val hasAnimatedTag = info.simpleTags?.any {
+                    it.substringAfter(':').equals("animated", ignoreCase = true)
+                } == true
+                val preferLocal = localCandidate != null && (
+                    localCandidate.isLocal ||
+                        localCandidate.thumbKey.isNullOrBlank() ||
+                        '/' !in localCandidate.thumbKey!! ||
+                        (localCandidate.state == DownloadInfo.STATE_FINISH && hasAnimatedTag)
+                    )
+                if (preferLocal) {
+                    LocalDownloadThumb(
+                        info = localCandidate!!,
+                        animatedOnly = !localCandidate.isLocal && !localCandidate.thumbKey.isNullOrBlank() && '/' in localCandidate.thumbKey!!,
+                        modifier = Modifier.aspectRatio(ratio),
+                        fallbackContent = {
+                            AsyncImage(
+                                model = requestOf(info),
+                                contentDescription = null,
+                                modifier = Modifier.aspectRatio(ratio),
+                                onSuccess = {
+                                    ratio = (it.result.image.width.toFloat() / it.result.image.height).coerceIn(MIN_RATIO, MAX_RATIO)
+                                },
+                            )
+                        },
+                    )
                 } else {
                     AsyncImage(
                         model = requestOf(info),

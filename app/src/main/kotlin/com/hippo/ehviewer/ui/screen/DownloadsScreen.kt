@@ -166,12 +166,24 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
     val scope = rememberCoroutineScope()
     val appContext = LocalContext.current
     val appResources = LocalResources.current
+    val metadataRevision = DownloadManager.metadataRevision
+    val scanProgress by LocalGalleryScanner.scanProgress.collectAsState()
+    val showTagTranslations by Settings.showTagTranslations.collectAsState()
+
     LaunchedEffect(Unit) {
-        launchIO {
-            if (LocalGalleryScanner.hasAllFilesAccess()) {
-                LocalGalleryScanner.scan()
-                withUIContext { invalidateKey = !invalidateKey }
-            }
+        // 无论是否具备所有文件权限，进入下载页都先自动识别用户当前设置的下载目录
+        LocalGalleryScanner.launchScanInBackground(
+            onlyConfiguredDownloadDir = !LocalGalleryScanner.hasAllFilesAccess(),
+        )
+    }
+    LaunchedEffect(showTagTranslations, EhTagDatabase.initialized) {
+        if (showTagTranslations && EhTagDatabase.translatable && !EhTagDatabase.initialized) {
+            EhTagDatabase.ensureInitialized()
+        }
+    }
+    LaunchedEffect(scanProgress.completedEventId, metadataRevision) {
+        if (scanProgress.completedEventId > 0 || metadataRevision > 0) {
+            invalidateKey = !invalidateKey
         }
     }
     val folderScanLauncher = rememberLauncherForActivityResult(
@@ -201,16 +213,14 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
                 }
                 return@launchIO
             }
-            val result = LocalGalleryScanner.scan(listOf(folder))
+            val started = LocalGalleryScanner.launchScanInBackground(
+                extraRoots = listOf(folder),
+                userInitiated = true,
+            )
             scope.coroutineLaunch {
-                invalidateKey = !invalidateKey
                 Toast.makeText(
                     appContext,
-                    appResources.getString(
-                        R.string.download_scan_local_result,
-                        result.scannedDirectories,
-                        result.imported,
-                    ),
+                    appResources.getString(if (started) R.string.download_scan_started else R.string.download_scan_running),
                     Toast.LENGTH_SHORT,
                 ).show()
             }
@@ -224,7 +234,7 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
     DrawerHandle(!selectMode && !searchBarExpanded)
 
     val density = LocalDensity.current
-    val canTranslate = Settings.showTagTranslations.value && EhTagDatabase.translatable && EhTagDatabase.initialized
+    val canTranslate = showTagTranslations && EhTagDatabase.translatable && EhTagDatabase.initialized
     val ehTags = EhTagDatabase.takeIf { canTranslate }
     fun getTranslation(tag: String) = ehTags?.run {
         getTranslation(TagNamespace.Artist.prefix, tag) ?: getTranslation(TagNamespace.Cosplayer.prefix, tag)
@@ -249,7 +259,7 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
     )
     val hint = stringResource(R.string.search_bar_hint, title)
     val list = if (DownloadManager.isInitialized) {
-        remember(filterState, invalidateKey) {
+        remember(filterState, invalidateKey, metadataRevision) {
             DownloadManager.downloadInfoList.filterTo(mutableStateListOf()) { info ->
                 filterState.take(info)
             }.also {
@@ -579,32 +589,20 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
                     text = { Text(text = stringResource(id = R.string.download_scan_local)) },
                     onClick = {
                         expanded = false
-                        launchIO {
-                            if (!LocalGalleryScanner.hasAllFilesAccess()) {
-                                val context = contextOf<Context>()
-                                scope.coroutineLaunch {
-                                    Toast.makeText(
-                                        context,
-                                        appResources.getString(R.string.download_scan_local_permission),
-                                        Toast.LENGTH_LONG,
-                                    ).show()
-                                    LocalGalleryScanner.openAllFilesAccessSettings(context)
-                                }
-                                return@launchIO
-                            }
-                            val result = LocalGalleryScanner.scan()
-                            scope.coroutineLaunch {
-                                invalidateKey = !invalidateKey
-                                Toast.makeText(
-                                    contextOf<Context>(),
-                                    appResources.getString(
-                                        R.string.download_scan_local_result,
-                                        result.scannedDirectories,
-                                        result.imported,
-                                    ),
-                                    Toast.LENGTH_SHORT,
-                                ).show()
-                            }
+                        if (!LocalGalleryScanner.hasAllFilesAccess()) {
+                            Toast.makeText(
+                                appContext,
+                                appResources.getString(R.string.download_scan_local_permission),
+                                Toast.LENGTH_LONG,
+                            ).show()
+                            LocalGalleryScanner.openAllFilesAccessSettings(appContext)
+                        } else {
+                            val started = LocalGalleryScanner.launchScanInBackground(userInitiated = true)
+                            Toast.makeText(
+                                appContext,
+                                appResources.getString(if (started) R.string.download_scan_started else R.string.download_scan_running),
+                                Toast.LENGTH_SHORT,
+                            ).show()
                         }
                     },
                 )
@@ -713,46 +711,73 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
                     }
                 }
             } else {
+                val listState = rememberLazyListState()
+                val isManualSort = SortMode.from(sortMode).field == SortMode.Field.CUSTOM
+                val listHapticFeedback = rememberHapticFeedback()
+                val reorderableListState = rememberReorderableLazyListState(listState) { from, to ->
+                    list.apply { add(to.index, removeAt(from.index)) }
+                    listHapticFeedback.performHapticFeedback(HapticFeedbackType.MOVE)
+                }
                 FastScrollLazyColumn(
                     modifier = Modifier.nestedScroll(searchBarConnection).fillMaxSize(),
+                    state = listState,
                     contentPadding = realPadding,
                     verticalArrangement = Arrangement.spacedBy(dimensionResource(com.hippo.ehviewer.R.dimen.gallery_list_interval)),
                 ) {
-                    items(list, key = { it.gid }) { info ->
+                    itemsIndexed(list, key = { _, info -> info.gid }) { _, info ->
                         val checked = info.gid in checkedInfoMap
-                        CheckableItem(
-                            checked = checked,
-                            modifier = Modifier.thenIf(animateItems) { animateItem() },
-                        ) { interactionSource ->
-                            DownloadCard(
-                                onClick = {
-                                    if (selectMode) {
-                                        if (checked) {
-                                            checkedInfoMap.remove(info.gid)
+                        ReorderableItem(
+                            reorderableListState,
+                            info.gid,
+                            enabled = isManualSort && !selectMode,
+                            animateItemModifier = Modifier.thenIf(animateItems) { animateItem() },
+                        ) {
+                            val dragModifier = if (isManualSort && !selectMode) {
+                                Modifier.draggableHandle(
+                                    onDragStarted = {
+                                        listHapticFeedback.performHapticFeedback(HapticFeedbackType.START)
+                                    },
+                                    onDragStopped = {
+                                        listHapticFeedback.performHapticFeedback(HapticFeedbackType.END)
+                                        val orderedGids = list.map(DownloadInfo::gid)
+                                        launchIO { DownloadManager.updateManualOrder(orderedGids) }
+                                    },
+                                )
+                            } else {
+                                null
+                            }
+                            CheckableItem(checked = checked) { interactionSource ->
+                                DownloadCard(
+                                    onClick = {
+                                        if (selectMode) {
+                                            if (checked) {
+                                                checkedInfoMap.remove(info.gid)
+                                            } else {
+                                                checkedInfoMap[info.gid] = info
+                                            }
                                         } else {
-                                            checkedInfoMap[info.gid] = info
+                                            onItemClick(info)
                                         }
-                                    } else {
-                                        onItemClick(info)
-                                    }
-                                },
-                                onThumbClick = {
-                                    navigate(info.galleryInfo.asDst())
-                                },
-                                onLongClick = {
-                                    checkedInfoMap[info.gid] = info
-                                },
-                                onStart = {
-                                    DownloadService.startDownload(info.galleryInfo)
-                                },
-                                onStop = { launchIO { DownloadManager.stopDownload(info.gid) } },
-                                info = info,
-                                selectMode = selectMode,
-                                showProgress = showProgress,
-                                thumbnailRefreshKey = invalidateKey,
-                                modifier = Modifier.height(height),
-                                interactionSource = interactionSource,
-                            )
+                                    },
+                                    onThumbClick = {
+                                        navigate(info.galleryInfo.asDst())
+                                    },
+                                    onLongClick = {
+                                        checkedInfoMap[info.gid] = info
+                                    },
+                                    onStart = {
+                                        DownloadService.startDownload(info.galleryInfo)
+                                    },
+                                    onStop = { launchIO { DownloadManager.stopDownload(info.gid) } },
+                                    info = info,
+                                    selectMode = selectMode,
+                                    showProgress = showProgress,
+                                    thumbnailRefreshKey = invalidateKey,
+                                    dragHandleModifier = dragModifier,
+                                    modifier = Modifier.height(height),
+                                    interactionSource = interactionSource,
+                                )
+                            }
                         }
                     }
                 }
@@ -820,6 +845,14 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
                 val mode = SortMode.All[selected].copy(groupByDownloadLabel = checked)
                 if (mode != oldMode) {
                     sortMode = mode.flag
+                    if (mode.field == SortMode.Field.CUSTOM && gridView) {
+                        gridView = false
+                        Toast.makeText(
+                            appContext,
+                            appResources.getString(R.string.download_manual_sort_list_hint),
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
                     isLoading = true
                     DownloadManager.sortDownloads(mode)
                     invalidateKey = !invalidateKey

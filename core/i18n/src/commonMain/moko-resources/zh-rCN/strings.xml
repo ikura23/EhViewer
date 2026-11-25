@@ -657,5 +657,13 @@
     <string name="download_update_started">已复用 %1$d 页，正在下载更新的 %2$d 页</string>
     <string name="download_update_all_reused">已复用全部 %1$d 页，正在完成替换升级…</string>
     <string name="download_update_failed">获取更新信息失败：%1$s</string>
+    <string name="manual_order">手动排序</string>
+    <string name="download_local_badge">本地</string>
+    <string name="download_scan_started">已在后台开始扫描本地画廊…</string>
+    <string name="download_scan_running">已有本地扫描任务正在后台运行</string>
+    <string name="download_scan_progress_scanning">正在扫描本地画廊 (%1$d/%2$d)…</string>
+    <string name="download_scan_progress_metadata">正在补全画廊信息 (%1$d/%2$d)…</string>
+    <string name="download_scan_complete_summary">本地扫描完成：发现 %1$d 项，新增 %2$d 项，补全信息 %3$d 项</string>
+    <string name="download_manual_sort_list_hint">已切换至列表视图，可拖动右侧图标调整顺序</string>
     <!-- Tachiyomi Reader End-->
 </resources>

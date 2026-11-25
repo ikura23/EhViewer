@@ -56,6 +56,8 @@ object EhTagDatabase : CoroutineScope {
     private val PREFIXES = ["-", "~", "tag:", "weak:"]
     private lateinit var tagGroups: Map<String, Map<String, String>>
     private val updateLock = Mutex()
+    @Volatile
+    private var lastAttemptMillis = 0L
     var initialized by mutableStateOf(false)
 
     fun getTranslation(prefix: String? = NAMESPACE_PREFIX, tag: String?): String? = tagGroups[prefix]?.get(tag)?.trim()?.ifEmpty { null }
@@ -144,6 +146,40 @@ object EhTagDatabase : CoroutineScope {
         it.bodyAsUtf8Text()
     }
 
+    /**
+     * 多源拉取翻译词库文件：主源 `raw.githubusercontent.com` 失败时自动回退至 jsDelivr 镜像，
+     * 改善国内网络或代理瞬间未就绪时标签翻译长期停留英文的问题。
+     */
+    private suspend fun fetchWithFallback(primaryUrl: String): String {
+        val candidates = buildList {
+            add(primaryUrl)
+            val rawPrefix = "https://raw.githubusercontent.com/EhTagTranslation/DatabaseReleases/refs/heads/master/"
+            if (primaryUrl.startsWith(rawPrefix)) {
+                val fileName = primaryUrl.removePrefix(rawPrefix)
+                add("https://cdn.jsdelivr.net/gh/EhTagTranslation/DatabaseReleases@master/$fileName")
+                add("https://fastly.jsdelivr.net/gh/EhTagTranslation/DatabaseReleases@master/$fileName")
+            }
+        }
+        var lastError: Throwable? = null
+        for (url in candidates) {
+            val result = runCatching { fetch(url) }
+            if (result.isSuccess) return result.getOrThrow()
+            lastError = result.exceptionOrNull()
+        }
+        throw lastError ?: IllegalStateException("Failed to fetch tag translations")
+    }
+
+    /**
+     * 若词库尚未初始化且距上次拉取尝试已超过 15 秒，自动重新触发后台拉取。
+     */
+    fun ensureInitialized() {
+        if (initialized) return
+        val now = System.currentTimeMillis()
+        if (now - lastAttemptMillis < 15_000L) return
+        lastAttemptMillis = now
+        launchUpdate()
+    }
+
     fun launchUpdate() = launch {
         updateLock.withLock {
             runSuspendCatching {
@@ -178,10 +214,10 @@ object EhTagDatabase : CoroutineScope {
         } else {
             null
         }
-        val newSha1 = fetch(sha1Url)
+        val newSha1 = fetchWithFallback(sha1Url)
         if (newSha1 == currentSha1) return
 
-        val rawData = fetch(dataUrl)
+        val rawData = fetchWithFallback(dataUrl)
         tagGroups = json.parseToJsonElement(rawData).jsonObject["data"]!!.jsonArray.associate { e ->
             val data = e.jsonObject
             val namespace = data["namespace"]!!.jsonPrimitive.content

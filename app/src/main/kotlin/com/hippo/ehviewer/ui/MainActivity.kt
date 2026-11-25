@@ -28,18 +28,29 @@ import android.view.View
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -53,10 +64,13 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Whatshot
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerDefaults
 import androidx.compose.material3.DrawerState
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
@@ -86,6 +100,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.snapshots.SnapshotStateList
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.RectangleShape
@@ -99,6 +114,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.lerp
 import androidx.compose.ui.zIndex
@@ -127,6 +143,7 @@ import com.hippo.ehviewer.client.parser.GalleryDetailUrlParser
 import com.hippo.ehviewer.client.parser.GalleryPageUrlParser
 import com.hippo.ehviewer.collectAsState
 import com.hippo.ehviewer.download.DownloadService
+import com.hippo.ehviewer.download.LocalGalleryScanner
 import com.hippo.ehviewer.download.downloadLocation
 import com.hippo.ehviewer.download.ensureValidDownloadLocation
 import com.hippo.ehviewer.ui.destinations.DownloadScreenDestination
@@ -135,6 +152,7 @@ import com.hippo.ehviewer.ui.destinations.FavouritesScreenDestination
 import com.hippo.ehviewer.ui.destinations.HistoryScreenDestination
 import com.hippo.ehviewer.ui.destinations.HomePageScreenDestination
 import com.hippo.ehviewer.ui.destinations.ProgressScreenDestination
+import com.hippo.ehviewer.ui.destinations.ReaderScreenDestination
 import com.hippo.ehviewer.ui.destinations.SettingsScreenDestination
 import com.hippo.ehviewer.ui.destinations.SignInScreenDestination
 import com.hippo.ehviewer.ui.destinations.SubscriptionScreenDestination
@@ -384,6 +402,20 @@ class MainActivity : AppCompatActivity() {
             val adaptiveInfo = currentWindowAdaptiveInfoV2()
             val needSignIn by Settings.needSignIn.collectAsState()
             val launchPage by Settings.launchPage.collectAsState()
+            val scanProgress by LocalGalleryScanner.scanProgress.collectAsState()
+            LaunchedEffect(scanProgress.completedEventId) {
+                val res = scanProgress.lastResult
+                if (scanProgress.completedEventId > 0 && res != null && (scanProgress.lastRunUserInitiated || res.imported > 0 || res.metadataUpdated > 0)) {
+                    snackbarState.showSnackbar(
+                        getString(
+                            R.string.download_scan_complete_summary,
+                            res.scannedDirectories,
+                            res.imported,
+                            res.metadataUpdated,
+                        ),
+                    )
+                }
+            }
             CompositionLocalProvider(
                 LocalNavDrawerState provides navDrawerState,
                 LocalSideSheetState provides sideSheetState,
@@ -407,77 +439,133 @@ class MainActivity : AppCompatActivity() {
                     var minOffset by remember {
                         mutableFloatStateOf(-with(density) { DrawerDefaults.MaximumDrawerWidth.toPx() })
                     }
-                    ModalNavigationDrawer(
-                        drawerContent = {
-                            ModalDrawerSheet(
-                                drawerState = navDrawerState,
-                                modifier = Modifier.widthIn(max = (configuration.screenWidthDp - 56).dp)
-                                    .onSizeChanged { minOffset = -it.width.toFloat() },
-                                windowInsets = WindowInsets.systemBars.only(WindowInsetsSides.Start),
-                            ) {
-                                val scrollState = rememberScrollState()
-                                Column(
-                                    modifier = Modifier.verticalScroll(scrollState)
-                                        .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Bottom)),
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        ModalNavigationDrawer(
+                            drawerContent = {
+                                ModalDrawerSheet(
+                                    drawerState = navDrawerState,
+                                    modifier = Modifier.widthIn(max = (configuration.screenWidthDp - 56).dp)
+                                        .onSizeChanged { minOffset = -it.width.toFloat() },
+                                    windowInsets = WindowInsets.systemBars.only(WindowInsetsSides.Start),
                                 ) {
-                                    Image(
-                                        painter = painterResource(id = com.hippo.ehviewer.R.drawable.sadpanda_low_poly),
-                                        contentDescription = null,
-                                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                                        contentScale = ContentScale.FillWidth,
-                                    )
-                                    navItems.forEach { (direction, stringId, icon) ->
-                                        NavigationDrawerItem(
-                                            label = {
-                                                Text(text = stringResource(id = stringId))
-                                            },
-                                            selected = currentDestination === direction,
-                                            onClick = {
-                                                navigator.navigate(direction)
-                                                closeDrawer()
-                                            },
-                                            modifier = Modifier.padding(horizontal = 12.dp),
-                                            icon = {
-                                                Icon(imageVector = icon, contentDescription = null)
-                                            },
+                                    val scrollState = rememberScrollState()
+                                    Column(
+                                        modifier = Modifier.verticalScroll(scrollState)
+                                            .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Bottom)),
+                                    ) {
+                                        Image(
+                                            painter = painterResource(id = com.hippo.ehviewer.R.drawable.sadpanda_low_poly),
+                                            contentDescription = null,
+                                            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                                            contentScale = ContentScale.FillWidth,
+                                        )
+                                        navItems.forEach { (direction, stringId, icon) ->
+                                            NavigationDrawerItem(
+                                                label = {
+                                                    Text(text = stringResource(id = stringId))
+                                                },
+                                                selected = currentDestination === direction,
+                                                onClick = {
+                                                    navigator.navigate(direction)
+                                                    closeDrawer()
+                                                },
+                                                modifier = Modifier.padding(horizontal = 12.dp),
+                                                icon = {
+                                                    Icon(imageVector = icon, contentDescription = null)
+                                                },
+                                            )
+                                        }
+                                    }
+                                }
+                            },
+                            drawerState = navDrawerState,
+                            gesturesEnabled = drawerEnabled && sideSheetState.isClosed || navDrawerState.isOpen,
+                        ) {
+                            val radius by remember {
+                                snapshotFlow {
+                                    val step = calculateFraction(minOffset, 0f, navDrawerState.currentOffset)
+                                    with(density) { lerp(0, 10, step).dp.toPx() }
+                                }
+                            }.collectAsState(0f)
+                            MutableSideSheet(
+                                drawerState = sideSheetState,
+                                modifier = Modifier.graphicsLayer {
+                                    if (radius != 0f) {
+                                        renderEffect = BlurEffect(radius, radius, TileMode.Clamp)
+                                        shape = RectangleShape
+                                        clip = true
+                                    }
+                                },
+                                enabled = drawerEnabled,
+                            ) {
+                                SharedTransitionLayout {
+                                    CompositionLocalProvider(LocalSharedTransitionScope provides this) {
+                                        val start = when {
+                                            needSignIn -> SignInScreenDestination
+                                            hasNetwork -> navItems[launchPage].first
+                                            else -> DownloadsScreenDestination
+                                        }
+                                        DestinationsNavHost(
+                                            navGraph = NavGraphs.root,
+                                            start = start,
+                                            defaultTransitions = rememberEhNavAnim(),
+                                            navController = navController,
                                         )
                                     }
                                 }
                             }
-                        },
-                        drawerState = navDrawerState,
-                        gesturesEnabled = drawerEnabled && sideSheetState.isClosed || navDrawerState.isOpen,
-                    ) {
-                        val radius by remember {
-                            snapshotFlow {
-                                val step = calculateFraction(minOffset, 0f, navDrawerState.currentOffset)
-                                with(density) { lerp(0, 10, step).dp.toPx() }
-                            }
-                        }.collectAsState(0f)
-                        MutableSideSheet(
-                            drawerState = sideSheetState,
-                            modifier = Modifier.graphicsLayer {
-                                if (radius != 0f) {
-                                    renderEffect = BlurEffect(radius, radius, TileMode.Clamp)
-                                    shape = RectangleShape
-                                    clip = true
-                                }
-                            },
-                            enabled = drawerEnabled,
+                        }
+                        // 全局非阻塞后台扫描进度悬浮条：除阅读器外均可见，不影响浏览榜单或进入画廊
+                        AnimatedVisibility(
+                            visible = scanProgress.running && currentDestination?.route != ReaderScreenDestination.route,
+                            enter = fadeIn() + slideInVertically { -it },
+                            exit = fadeOut() + slideOutVertically { -it },
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .statusBarsPadding()
+                                .padding(horizontal = 16.dp, vertical = 8.dp)
+                                .zIndex(10f),
                         ) {
-                            SharedTransitionLayout {
-                                CompositionLocalProvider(LocalSharedTransitionScope provides this) {
-                                    val start = when {
-                                        needSignIn -> SignInScreenDestination
-                                        hasNetwork -> navItems[launchPage].first
-                                        else -> DownloadsScreenDestination
+                            ElevatedCard(
+                                modifier = Modifier.widthIn(max = 420.dp).fillMaxWidth(),
+                            ) {
+                                Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                                    val statusText = when (scanProgress.stage) {
+                                        LocalGalleryScanner.ScanStage.FETCHING_METADATA -> stringResource(
+                                            R.string.download_scan_progress_metadata,
+                                            scanProgress.scanned,
+                                            scanProgress.total,
+                                        )
+                                        else -> stringResource(
+                                            R.string.download_scan_progress_scanning,
+                                            scanProgress.scanned,
+                                            scanProgress.total,
+                                        )
                                     }
-                                    DestinationsNavHost(
-                                        navGraph = NavGraphs.root,
-                                        start = start,
-                                        defaultTransitions = rememberEhNavAnim(),
-                                        navController = navController,
-                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    ) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(16.dp),
+                                            strokeWidth = 2.dp,
+                                        )
+                                        Text(
+                                            text = statusText,
+                                            style = MaterialTheme.typography.labelLarge,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    if (scanProgress.total > 0) {
+                                        LinearProgressIndicator(
+                                            progress = { (scanProgress.scanned.toFloat() / scanProgress.total).coerceIn(0f, 1f) },
+                                            modifier = Modifier.fillMaxWidth(),
+                                        )
+                                    } else {
+                                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                    }
                                 }
                             }
                         }

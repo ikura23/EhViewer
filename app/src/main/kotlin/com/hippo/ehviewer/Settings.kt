@@ -203,7 +203,8 @@ object Settings : DataStorePreferences(null) {
 
     init {
         edit { pref ->
-            if ("CN" == Locale.getDefault().country) {
+            val locale = Locale.getDefault()
+            if (locale.language.equals("zh", ignoreCase = true) || "CN" == locale.country) {
                 if (showTagTranslations !in pref) pref[showTagTranslations] = true
             }
             if (pref[downloadFilterMode] == DownloadsFilterMode.ARTIST.flag && pref[recentDownloadLabel] == null) {

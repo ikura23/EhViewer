@@ -89,7 +89,7 @@ fun GalleryDetailHeaderCard(
     Row {
         with(detailThumbGenerator) {
             EhThumbCard(
-                key = remember(info.gid) { info },
+                key = remember(info.gid, info.thumbKey) { info },
                 modifier = Modifier.size(
                     dimensionResource(id = com.hippo.ehviewer.R.dimen.gallery_detail_thumb_width),
                     dimensionResource(id = com.hippo.ehviewer.R.dimen.gallery_detail_thumb_height),

@@ -675,5 +675,13 @@
     <string name="download_update_started">Reused %1$d pages, downloading %2$d updated pages</string>
     <string name="download_update_all_reused">Reused all %1$d pages, finishing upgrade…</string>
     <string name="download_update_failed">Failed to prepare update: %1$s</string>
+    <string name="manual_order">Manual order</string>
+    <string name="download_local_badge">Local</string>
+    <string name="download_scan_started">Scanning local galleries in background…</string>
+    <string name="download_scan_running">A local gallery scan is already running</string>
+    <string name="download_scan_progress_scanning">Scanning local galleries (%1$d/%2$d)…</string>
+    <string name="download_scan_progress_metadata">Fetching gallery metadata (%1$d/%2$d)…</string>
+    <string name="download_scan_complete_summary">Local scan finished: found %1$d, imported %2$d, updated %3$d</string>
+    <string name="download_manual_sort_list_hint">Switched to list view. Drag the handle on the right to reorder.</string>
     <!-- Tachiyomi Reader End-->
 </resources>

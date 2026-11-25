@@ -117,6 +117,7 @@ fun AnimatedVisibilityScope.DownloadScreen(navigator: DestinationsNavigator) = S
                                     releasePersistableUriPermission(it.uri, URI_FLAGS)
                                 }
                             }
+                            LocalGalleryScanner.launchScanInBackground(onlyConfiguredDownloadDir = true)
                         }.onFailure {
                             logcat(it)
                             launchSnackbar(cannotGetDownloadLocation)
@@ -150,6 +151,7 @@ fun AnimatedVisibilityScope.DownloadScreen(navigator: DestinationsNavigator) = S
                                     }
                                     val ensured = AppConfig.ensureDefaultDownloadDir()?.toOkioPath() ?: path
                                     downloadLocationState = ensured
+                                    LocalGalleryScanner.launchScanInBackground(onlyConfiguredDownloadDir = true)
                                 }
                             },
                         ) {
@@ -167,6 +169,7 @@ fun AnimatedVisibilityScope.DownloadScreen(navigator: DestinationsNavigator) = S
                                 check(path.isDirectory) { "$path is not a directory" }
                                 keepNoMediaFileStatus(path) // Check if the directory is writable
                                 downloadLocationState = path
+                                LocalGalleryScanner.launchScanInBackground(onlyConfiguredDownloadDir = true)
                                 return@launchIO
                             }.onFailure {
                                 logcat(it)
@@ -316,14 +319,8 @@ fun AnimatedVisibilityScope.DownloadScreen(navigator: DestinationsNavigator) = S
                     launchSnackbar(string(R.string.download_scan_local_permission))
                     LocalGalleryScanner.openAllFilesAccessSettings(appCtx)
                 } else {
-                    val result = LocalGalleryScanner.scan()
-                    launchSnackbar(
-                        string(
-                            R.string.download_scan_local_result,
-                            result.scannedDirectories,
-                            result.imported,
-                        ),
-                    )
+                    val started = LocalGalleryScanner.launchScanInBackground(userInitiated = true)
+                    launchSnackbar(string(if (started) R.string.download_scan_started else R.string.download_scan_running))
                 }
             }
             WorkPreference(

@@ -36,8 +36,10 @@ object DownloadThumbInterceptor : Interceptor {
             val thumbKey = if (isLocalImport) {
                 info.thumbKey ?: return chain.proceed()
             } else {
-                val remoteKey = (chain.request.data as? String)?.let(::getThumbKey) ?: info.thumbKey ?: return chain.proceed()
-                if (info.thumbKey != remoteKey) {
+                val remoteKey = (chain.request.data as? String)?.let(::getThumbKey)?.takeIf { '/' in it }
+                    ?: info.thumbKey
+                    ?: return chain.proceed()
+                if ('/' in remoteKey && info.thumbKey != remoteKey) {
                     info.thumbKey = remoteKey
                     EhDB.putGalleryInfo(info.galleryInfo)
                 }
@@ -62,7 +64,7 @@ object DownloadThumbInterceptor : Interceptor {
             if (result is SuccessResult && dir.isDirectory && !isLocalImport) {
                 // Accessing the recreated file immediately after deleting it throws
                 // FileNotFoundException, so we just overwrite the existing file.
-                val key = requireNotNull(chain.request.memoryCacheKey)
+                val key = chain.request.diskCacheKey ?: chain.request.memoryCacheKey ?: return result
                 thumbCache.read(key) {
                     data sendTo thumb
                 }

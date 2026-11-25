@@ -613,5 +613,13 @@
     <string name="dark_theme_on">常に ON にする</string>
     <string name="blocked_image">ブロックされた画像</string>
     <string name="show_blocked_image">ブロックされた画像を表示</string>
+    <string name="manual_order">手動並べ替え</string>
+    <string name="download_local_badge">ローカル</string>
+    <string name="download_scan_started">バックグラウンドでローカルスキャンを開始しました…</string>
+    <string name="download_scan_running">ローカルスキャンは既にバックグラウンドで実行中です</string>
+    <string name="download_scan_progress_scanning">ローカルギャラリーをスキャン中 (%1$d/%2$d)…</string>
+    <string name="download_scan_progress_metadata">ギャラリー情報を補完中 (%1$d/%2$d)…</string>
+    <string name="download_scan_complete_summary">スキャン完了：検出 %1$d 件、追加 %2$d 件、情報補完 %3$d 件</string>
+    <string name="download_manual_sort_list_hint">リスト表示に切り替えました。右側のアイコンをドラッグして並べ替えできます</string>
     <!-- Tachiyomi Reader End-->
 </resources>

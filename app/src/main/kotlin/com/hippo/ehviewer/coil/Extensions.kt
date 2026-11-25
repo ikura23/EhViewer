@@ -17,19 +17,28 @@ import com.hippo.ehviewer.client.thumbUrl
 import com.hippo.ehviewer.download.DownloadManager
 import com.hippo.ehviewer.ktbuilder.execute
 
+/**
+ * 为画廊封面生成隔离后的缓存键：
+ * - 远程 `thumbKey`（含 `/` 分隔路径）本身全局唯一，直接复用；
+ * - 本地导入仅有相对文件名（如 `00000001.jpg`），必须拼接 `gid` 隔离，防止不同画廊互相串图。
+ */
+fun resolveGalleryThumbCacheKey(gid: Long, thumbKey: String): String =
+    if ('/' in thumbKey) thumbKey else "local-thumb:$gid:$thumbKey"
+
 // Load in original size so the memory cache can be reused for preload requests
 fun ImageRequest.Builder.ehUrl(info: GalleryInfo) = apply {
     // Imported local galleries have no remote thumbKey. Let the caller render a local
     // placeholder instead of crashing the whole downloads screen.
     val key = info.thumbKey ?: return@apply
+    val cacheKey = resolveGalleryThumbCacheKey(info.gid, key)
     data(info.thumbUrl)
     size(SizeResolver.ORIGINAL)
     val downloadInfo = (info as? DownloadInfo) ?: DownloadManager.getDownloadInfo(info.gid)
     if (downloadInfo != null) {
         downloadInfo(downloadInfo)
     }
-    memoryCacheKey(key)
-    diskCacheKey(key)
+    memoryCacheKey(cacheKey)
+    diskCacheKey(cacheKey)
 }
 
 // Load in original size so the memory cache can be reused for preload requests

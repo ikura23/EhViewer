@@ -25,6 +25,7 @@ import androidx.compose.runtime.Stable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,7 +46,9 @@ import com.ehviewer.core.files.isFile
 import com.ehviewer.core.files.toOkioPath
 import com.ehviewer.core.files.toUri
 import com.ehviewer.core.model.BaseGalleryInfo
+import com.ehviewer.core.model.GalleryDetail
 import com.ehviewer.core.model.GalleryInfo
+import com.ehviewer.core.model.TagNamespace
 import com.ehviewer.core.preferences.edit
 import com.ehviewer.core.util.logcat
 import com.ehviewer.core.util.mapNotNull
@@ -193,8 +196,19 @@ object DownloadManager : CoroutineScope {
     }
 
     private val sortMutex = Mutex()
+    private val manualOrderPrefs = appCtx.getSharedPreferences("download_manual_order", android.content.Context.MODE_PRIVATE)
+    private var manualOrder: List<Long> = loadManualOrder()
+
+    @Volatile
+    private var manualOrderRanks: Map<Long, Int> = rebuildManualRanks(manualOrder)
+
+    var metadataRevision by mutableIntStateOf(0)
+        private set
+
     private val sortMode
         get() = SortMode.from(Settings.downloadSortMode.value)
+
+    private fun currentComparator() = sortMode.comparator(manualOrderRanks)
 
     var isInitialized by mutableStateOf(false)
         private set
@@ -205,6 +219,20 @@ object DownloadManager : CoroutineScope {
             if (mode != SortMode.Default) sortDownloads(mode)
             isInitialized = true
         }
+    }
+
+    private fun loadManualOrder(): List<Long> = manualOrderPrefs.getString("order", null)
+        ?.split(',')
+        ?.mapNotNull { it.toLongOrNull() }
+        ?.distinct()
+        .orEmpty()
+
+    private fun rebuildManualRanks(order: List<Long>): Map<Long, Int> = buildMap(order.size) {
+        order.forEachIndexed { index, gid -> put(gid, index) }
+    }
+
+    private fun saveManualOrder(order: List<Long>) {
+        manualOrderPrefs.edit().putString("order", order.joinToString(",")).apply()
     }
 
     fun containLabel(label: String?): Boolean {
@@ -394,7 +422,7 @@ object DownloadManager : CoroutineScope {
             info.state = DownloadInfo.STATE_WAIT
             // Add to all download list and map
             mutateAllInfoList {
-                it.insertWith(info, sortMode.comparator())
+                it.insertWith(info, currentComparator())
             }
             mAllInfoMap[galleryInfo.gid] = info
 
@@ -480,7 +508,7 @@ object DownloadManager : CoroutineScope {
                 downloadInfo = info.downloadInfo.copy(state = state),
             )
         }
-        val comparator = sortMode.comparator()
+        val comparator = currentComparator()
         for (info in imported) {
             persistence.execute {
                 EhDB.putDownloadInfo(info)
@@ -508,7 +536,7 @@ object DownloadManager : CoroutineScope {
 
         // Add to all download list and map
         mutateAllInfoList {
-            it.insertWith(info, sortMode.comparator())
+            it.insertWith(info, currentComparator())
         }
         mAllInfoMap[galleryInfo.gid] = info
 
@@ -518,6 +546,25 @@ object DownloadManager : CoroutineScope {
         // Notify
         mutableNotifyFlow.emit(info)
     }
+
+    private fun extractArtistNames(tags: List<String>?): List<String> = tags.orEmpty()
+        .mapNotNull { tag ->
+            val idx = tag.indexOf(':')
+            if (idx <= 0) return@mapNotNull null
+            val ns = tag.substring(0, idx)
+            val name = tag.substring(idx + 1).trim()
+            if (name.isEmpty()) return@mapNotNull null
+            if (ns == TagNamespace.Artist.prefix ||
+                ns == TagNamespace.Artist.value ||
+                ns == TagNamespace.Cosplayer.prefix ||
+                ns == TagNamespace.Cosplayer.value
+            ) {
+                name
+            } else {
+                null
+            }
+        }
+        .distinct()
 
     suspend fun importLocalDownload(
         galleryInfo: BaseGalleryInfo,
@@ -535,20 +582,147 @@ object DownloadManager : CoroutineScope {
         info.total = pages
         info.finished = pages
         info.label = label
+        val artistNames = extractArtistNames(galleryInfo.simpleTags)
+        if (artistNames.isNotEmpty()) {
+            info.artistInfoList = DownloadArtist.from(info.gid, artistNames)
+        }
         mutateAllInfoList {
-            it.insertWith(info, sortMode.comparator())
+            it.insertWith(info, currentComparator())
         }
         mAllInfoMap[galleryInfo.gid] = info
         val snapshot = info.copy(
             galleryInfo = info.galleryInfo.toEntitySnapshot(),
+            artistInfoList = info.artistInfoList.toList(),
             downloadInfo = info.downloadInfo.copy(),
         )
         persist {
             EhDB.putDownloadDirname(snapshot.gid, absolutePath)
             EhDB.putDownloadInfo(snapshot)
+            if (snapshot.artistInfoList.isNotEmpty()) {
+                EhDB.putDownloadArtist(snapshot.gid, snapshot.artistInfoList)
+            }
         }
+        metadataRevision++
         mutableNotifyFlow.emit(info)
         true
+    }
+
+    /**
+     * 将从详情页或联网 API 补全到的完整画廊元数据同步回下载数据库与内存缓存，
+     * 解决本地导入或旧条目退出详情页后仍显示 `UNKNOWN` 分类及“未知作者”的问题。
+     */
+    suspend fun syncGalleryMetadata(source: GalleryInfo): Boolean {
+        val extractedTags = if (source is GalleryDetail) {
+            source.tagGroups.flatMap { group ->
+                val prefix = group.namespace.prefix ?: group.namespace.value
+                group.tags.map { "$prefix:${it.text}" }
+            }.ifEmpty { source.simpleTags }
+        } else {
+            source.simpleTags
+        }
+        val extractedArtists = if (source is GalleryDetail) {
+            source.tagGroups
+                .filter { it.namespace == TagNamespace.Artist || it.namespace == TagNamespace.Cosplayer }
+                .flatMap { it.tags }
+                .map { it.text.trim() }
+                .filter { it.isNotEmpty() }
+                .distinct()
+        } else {
+            extractArtistNames(extractedTags)
+        }
+
+        return commandResult {
+            val old = mAllInfoMap[source.gid] ?: return@commandResult false
+            val entity = old.galleryInfo
+            var changed = false
+            var artistsChanged = false
+
+            val newTitle = source.title?.takeIf { it.isNotBlank() }
+            if (newTitle != null && entity.title != newTitle) {
+                entity.title = newTitle
+                changed = true
+            }
+            val newTitleJpn = source.titleJpn?.takeIf { it.isNotBlank() }
+            if (newTitleJpn != null && entity.titleJpn != newTitleJpn) {
+                entity.titleJpn = newTitleJpn
+                changed = true
+            }
+            if (source.category != 0 && entity.category != source.category) {
+                entity.category = source.category
+                changed = true
+            }
+            val newUploader = source.uploader?.takeIf { it.isNotBlank() }
+            if (newUploader != null && entity.uploader != newUploader) {
+                entity.uploader = newUploader
+                changed = true
+            }
+            if (source.rating >= 0f && entity.rating != source.rating) {
+                entity.rating = source.rating
+                changed = true
+            }
+            val newPosted = source.posted?.takeIf { it.isNotBlank() }
+            if (newPosted != null && entity.posted != newPosted) {
+                entity.posted = newPosted
+                changed = true
+            }
+            val newThumbKey = source.thumbKey?.takeIf { it.isNotBlank() }
+            if (newThumbKey != null && entity.thumbKey != newThumbKey) {
+                // 优先保留/更新为包含 `/` 的远程 thumbKey，不让本地相对文件名反向覆盖远程 key
+                if ('/' in newThumbKey || entity.thumbKey.isNullOrBlank()) {
+                    entity.thumbKey = newThumbKey
+                    changed = true
+                }
+            }
+            if (source.thumbWidth > 0 && entity.thumbWidth != source.thumbWidth) {
+                entity.thumbWidth = source.thumbWidth
+                changed = true
+            }
+            if (source.thumbHeight > 0 && entity.thumbHeight != source.thumbHeight) {
+                entity.thumbHeight = source.thumbHeight
+                changed = true
+            }
+            if (!extractedTags.isNullOrEmpty() && entity.simpleTags != extractedTags) {
+                entity.simpleTags = extractedTags.toList()
+                changed = true
+            }
+            val newLang = source.simpleLanguage?.takeIf { it.isNotBlank() }
+            if (newLang != null && entity.simpleLanguage != newLang) {
+                entity.simpleLanguage = newLang
+                changed = true
+            }
+            if (entity.disowned != source.disowned) {
+                entity.disowned = source.disowned
+                changed = true
+            }
+            val targetPages = maxOf(entity.pages, source.pages)
+            if (targetPages > entity.pages) {
+                entity.pages = targetPages
+                changed = true
+            }
+            if (extractedArtists.isNotEmpty()) {
+                val oldArtists = old.artistInfoList.map { it.artist }
+                if (oldArtists != extractedArtists) {
+                    old.artistInfoList = DownloadArtist.from(old.gid, extractedArtists)
+                    artistsChanged = true
+                    changed = true
+                }
+            }
+
+            if (!changed) return@commandResult false
+
+            mutateAllInfoList { }
+            val snapshot = entity.toEntitySnapshot()
+            val artistsSnapshot = old.artistInfoList.toList()
+            persist {
+                EhDB.putGalleryInfo(snapshot)
+                if (artistsChanged) {
+                    EhDB.putDownloadArtist(old.gid, artistsSnapshot)
+                }
+            }
+            metadataRevision++
+            mutableNotifyFlow.emit(old)
+            true
+        }
     }
 
     suspend fun attachLocalDirname(
@@ -579,7 +753,7 @@ object DownloadManager : CoroutineScope {
             if (idx >= 0) {
                 list[idx] = info
             } else {
-                list.insertWith(info, sortMode.comparator())
+                list.insertWith(info, currentComparator())
             }
         }
         val gallerySnapshot = info.galleryInfo.toEntitySnapshot()
@@ -587,6 +761,7 @@ object DownloadManager : CoroutineScope {
             EhDB.putDownloadDirname(gid, absolutePath)
             EhDB.putGalleryInfo(gallerySnapshot)
         }
+        metadataRevision++
         mutableNotifyFlow.emit(info)
         true
     }
@@ -628,7 +803,7 @@ object DownloadManager : CoroutineScope {
             if (idx >= 0) {
                 list[idx] = info
             } else {
-                list.insertWith(info, sortMode.comparator())
+                list.insertWith(info, currentComparator())
             }
         }
         val gallerySnapshot = info.galleryInfo.toEntitySnapshot()
@@ -637,6 +812,7 @@ object DownloadManager : CoroutineScope {
             EhDB.putDownloadDirname(gid, dirname)
             EhDB.putGalleryInfo(gallerySnapshot)
         }
+        metadataRevision++
         mutableNotifyFlow.emit(info)
         true
     }
@@ -778,7 +954,26 @@ object DownloadManager : CoroutineScope {
     }
 
     suspend fun sortDownloads(mode: SortMode) = mutateAllInfoList {
-        it.sortWith(mode.comparator())
+        it.sortWith(mode.comparator(manualOrderRanks))
+    }
+
+    /**
+     * 更新并持久化用户手动拖拽排列的下载画廊顺序。
+     */
+    suspend fun updateManualOrder(visibleOrderedGids: List<Long>) = command {
+        if (visibleOrderedGids.isEmpty()) return@command
+        val existingSet = manualOrder.toHashSet()
+        val baseOrder = manualOrder + allInfoList.map { it.gid }.filter { it !in existingSet }
+        val merged = mergeManualOrder(baseOrder, visibleOrderedGids)
+        manualOrder = merged
+        manualOrderRanks = rebuildManualRanks(merged)
+        saveManualOrder(merged)
+        if (sortMode.field == SortMode.Field.CUSTOM) {
+            mutateAllInfoList { list ->
+                list.sortWith(sortMode.comparator(manualOrderRanks))
+            }
+        }
+        metadataRevision++
     }
 
     suspend fun resetAllReadingProgress() = runCatching {

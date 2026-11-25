@@ -15,6 +15,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -40,7 +41,13 @@ fun GalleryTags(
     onTagLongClick: (String, String, VoteStatus) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val canTranslate = Settings.showTagTranslations.value && EhTagDatabase.translatable && EhTagDatabase.initialized
+    val showTagTranslations by Settings.showTagTranslations.collectAsState()
+    val canTranslate = showTagTranslations && EhTagDatabase.translatable && EhTagDatabase.initialized
+    if (showTagTranslations && EhTagDatabase.translatable && !EhTagDatabase.initialized) {
+        LaunchedEffect(showTagTranslations, EhTagDatabase.initialized) {
+            EhTagDatabase.ensureInitialized()
+        }
+    }
     val ehTags = EhTagDatabase.takeIf { canTranslate }
     fun TagNamespace.translate() = ehTags?.getTranslation(tag = value) ?: value
     fun String.translate(ns: TagNamespace) = ehTags?.getTranslation(prefix = ns.prefix, tag = this) ?: this

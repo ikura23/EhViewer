@@ -2,9 +2,12 @@ package com.hippo.ehviewer.ui.main
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.drawable.Animatable
 import androidx.compose.animation.SharedTransitionScope
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -18,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Reorder
 import androidx.compose.material3.Card
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -29,6 +33,7 @@ import androidx.compose.material3.ShapeDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.movableContentOf
@@ -37,6 +42,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
@@ -45,8 +51,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import coil3.compose.AsyncImage
+import coil3.DrawableImage
+import coil3.compose.AsyncImagePainter
+import coil3.compose.rememberAsyncImagePainter
 import coil3.request.ImageRequest
+import coil3.request.crossfade
 import com.ehviewer.core.database.model.DownloadInfo
 import com.ehviewer.core.files.isFile
 import com.ehviewer.core.i18n.R
@@ -59,6 +68,8 @@ import com.hippo.ehviewer.client.EhUtils
 import com.hippo.ehviewer.download.DownloadManager
 import com.hippo.ehviewer.download.archiveThumbPath
 import com.hippo.ehviewer.download.downloadDir
+import com.hippo.ehviewer.download.isAnimatedImageFile
+import com.hippo.ehviewer.download.isAnimatedImageHeader
 import com.hippo.ehviewer.download.isLocal
 import com.hippo.ehviewer.gallery.LocalFolderPageLoader
 import com.hippo.ehviewer.util.AppConfig
@@ -80,31 +91,48 @@ fun DownloadCard(
     selectMode: Boolean,
     showProgress: Boolean,
     thumbnailRefreshKey: Any = Unit,
+    dragHandleModifier: Modifier? = null,
     modifier: Modifier = Modifier,
     interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
 ) = CrystalCard(modifier = modifier, onClick = onClick, onLongClick = onLongClick, interactionSource = interactionSource) {
     Row {
         val thumb = remember {
             movableContentOf<DownloadInfo, Any> { item, refreshKey ->
-                if (item.isLocal || item.thumbKey.isNullOrBlank() || '/' !in item.thumbKey!!) {
+                val hasAnimatedTag = item.simpleTags?.any {
+                    it.substringAfter(':').equals("animated", ignoreCase = true)
+                } == true
+                val preferLocal = item.isLocal ||
+                    item.thumbKey.isNullOrBlank() ||
+                    '/' !in item.thumbKey!! ||
+                    item.state == DownloadInfo.STATE_FINISH
+                if (preferLocal) {
                     LocalDownloadThumb(
                         info = item,
                         thumbnailRefreshKey = refreshKey,
+                        animatedOnly = !item.isLocal && !item.thumbKey.isNullOrBlank() && '/' in item.thumbKey!! && !hasAnimatedTag,
                         modifier = Modifier.aspectRatio(DEFAULT_RATIO).fillMaxSize(),
+                        fallbackContent = {
+                            if (!item.thumbKey.isNullOrBlank() && '/' in item.thumbKey!!) {
+                                with(listThumbGenerator) {
+                                    EhAsyncCropThumb(
+                                        key = item,
+                                        modifier = Modifier.aspectRatio(DEFAULT_RATIO).fillMaxSize(),
+                                    )
+                                }
+                            } else {
+                                Box(
+                                    modifier = Modifier.aspectRatio(DEFAULT_RATIO).fillMaxSize()
+                                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                                )
+                            }
+                        },
                     )
                 } else {
                     with(listThumbGenerator) {
-                        if (item.thumbKey != null) {
-                            EhAsyncCropThumb(
-                                key = item,
-                                modifier = Modifier.aspectRatio(DEFAULT_RATIO).fillMaxSize(),
-                            )
-                        } else {
-                            Box(
-                                modifier = Modifier.aspectRatio(DEFAULT_RATIO).fillMaxSize()
-                                    .background(MaterialTheme.colorScheme.surfaceVariant),
-                            )
-                        }
+                        EhAsyncCropThumb(
+                            key = item,
+                            modifier = Modifier.aspectRatio(DEFAULT_RATIO).fillMaxSize(),
+                        )
                     }
                 }
             }
@@ -188,12 +216,23 @@ fun DownloadCard(
                     GalleryListCardRating(rating = info.rating, modifier = Modifier.padding(top = 1.dp, bottom = 3.dp))
                     val categoryColor = EhUtils.getCategoryColor(info.category)
                     val categoryText = EhUtils.getCategory(info.category).uppercase()
-                    Text(
-                        text = categoryText,
-                        modifier = Modifier.clip(ShapeDefaults.Small).background(categoryColor).padding(vertical = 2.dp, horizontal = 8.dp),
-                        color = EhUtils.getCategoryTextColor(categoryColor),
-                        style = MaterialTheme.typography.labelLarge,
-                    )
+                    val showLocalBadge = info.label == "本地" || info.isLocal
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = categoryText,
+                            modifier = Modifier.clip(ShapeDefaults.Small).background(categoryColor).padding(vertical = 2.dp, horizontal = 8.dp),
+                            color = EhUtils.getCategoryTextColor(categoryColor),
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                        if (showLocalBadge) {
+                            Text(
+                                text = stringResource(R.string.download_local_badge),
+                                modifier = Modifier.clip(ShapeDefaults.Small).background(MaterialTheme.colorScheme.secondaryContainer).padding(vertical = 2.dp, horizontal = 6.dp),
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                        }
+                    }
                 }
                 Spacer(modifier = Modifier.weight(1f))
                 val running = downloadState == DownloadInfo.STATE_WAIT || downloadState == DownloadInfo.STATE_DOWNLOAD
@@ -207,8 +246,18 @@ fun DownloadCard(
                         Icon(imageVector = icon, contentDescription = null)
                     }
                 } else {
-                    IconButton(onClick = if (running) onStop else onStart, shapes = IconButtonDefaults.shapes(), modifier = Modifier.offset(4.dp)) {
-                        Icon(imageVector = icon, contentDescription = null)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = if (running) onStop else onStart, shapes = IconButtonDefaults.shapes(), modifier = Modifier.offset(4.dp)) {
+                            Icon(imageVector = icon, contentDescription = null)
+                        }
+                        if (dragHandleModifier != null) {
+                            Box(
+                                modifier = dragHandleModifier.minimumInteractiveComponentSize(),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(imageVector = Icons.Default.Reorder, contentDescription = null)
+                            }
+                        }
                     }
                 }
             }
@@ -220,11 +269,13 @@ fun DownloadCard(
 fun LocalDownloadThumb(
     info: DownloadInfo,
     thumbnailRefreshKey: Any = Unit,
+    animatedOnly: Boolean = false,
     modifier: Modifier = Modifier,
+    fallbackContent: (@Composable () -> Unit)? = null,
 ) {
-    val thumbState by produceState<LocalThumbResult?>(null, info.gid, info.dirname, thumbnailRefreshKey) {
+    val thumbState by produceState<LocalThumbResult?>(null, info.gid, info.dirname, animatedOnly, thumbnailRefreshKey) {
         value = withContext(Dispatchers.IO) {
-            resolveLocalThumb(info)
+            resolveLocalThumb(info, animatedOnly)
         }
     }
     val resolved = thumbState
@@ -235,14 +286,27 @@ fun LocalDownloadThumb(
                 .data(resolved.file)
                 .memoryCacheKey(resolved.cacheKey)
                 .diskCacheKey(resolved.cacheKey)
+                .crossfade(false)
                 .build()
         }
-        AsyncImage(
-            model = request,
+        val painter = rememberAsyncImagePainter(model = request)
+        val painterState by painter.state.collectAsState()
+        val animatable = ((painterState as? AsyncImagePainter.State.Success)?.result?.image as? DrawableImage)?.drawable as? Animatable
+        // 列表项复用到可见窗口时自动开启动图播放，离屏回收时及时停止动画释放资源
+        DisposableEffect(animatable) {
+            animatable?.start()
+            onDispose {
+                animatable?.stop()
+            }
+        }
+        Image(
+            painter = painter,
             contentDescription = null,
             modifier = modifier,
             contentScale = ContentScale.Crop,
         )
+    } else if (fallbackContent != null) {
+        fallbackContent()
     } else {
         Box(modifier = modifier.background(MaterialTheme.colorScheme.surfaceVariant))
     }
@@ -253,35 +317,65 @@ private data class LocalThumbResult(
     val cacheKey: String,
 )
 
-private fun resolveLocalThumb(info: DownloadInfo): LocalThumbResult? = runCatching {
+private const val MAX_ANIMATED_THUMB_BYTES = 16L * 1024 * 1024
+
+private fun resolveLocalThumb(info: DownloadInfo, animatedOnly: Boolean): LocalThumbResult? = runCatching {
     val dir = info.downloadDir ?: return@runCatching null
     val resolvedFile = if (dir.isFile) {
         val cachePrefix = "${info.gid}-${dir.toString().hashCode().toUInt().toString(16)}"
-        val cached = AppConfig.localThumbDir.toFile().listFiles()
-            ?.firstOrNull {
-                it.nameWithoutExtension == cachePrefix && it.isFile && it.length() > 0
-            }
-        if (cached != null && isUsableThumb(cached)) {
-            cached
+        val cachedAnim = AppConfig.localThumbDir.toFile().listFiles()?.firstOrNull {
+            it.nameWithoutExtension == cachePrefix &&
+                it.isFile &&
+                it.length() > 0L &&
+                it.extension.lowercase() in setOf("gif", "webp") &&
+                isAnimatedImageFile(it)
+        }
+        if (cachedAnim != null) {
+            cachedAnim
+        } else if (animatedOnly) {
+            null
         } else {
-            cached?.delete()
-            val archiveThumb = File(archiveThumbPath(info.gid).toString())
-            if (archiveThumb.isFile && isUsableThumb(archiveThumb)) {
-                archiveThumb
+            val cached = AppConfig.localThumbDir.toFile().listFiles()
+                ?.firstOrNull {
+                    it.nameWithoutExtension == cachePrefix && it.isFile && it.length() > 0
+                }
+            if (cached != null && isUsableThumb(cached)) {
+                cached
             } else {
-                archiveThumb.delete()
-                createArchiveThumb(File(dir.toString()), info.gid, cachePrefix)
+                cached?.delete()
+                val archiveThumb = File(archiveThumbPath(info.gid).toString())
+                if (archiveThumb.isFile && isUsableThumb(archiveThumb)) {
+                    archiveThumb
+                } else {
+                    archiveThumb.delete()
+                    createArchiveThumb(File(dir.toString()), info.gid, cachePrefix)
+                }
             }
         }
     } else {
-        val cached = File(AppConfig.localThumbDir.toString(), "${info.gid}.jpg")
-        if (cached.isFile && isUsableThumb(cached)) {
-            cached
+        // 先快速探测首张实际图片是否为真动图：若是，直接播放原动图并跳过静态 .jpg 缓存
+        val firstFile = if (animatedOnly) {
+            listOf("00000001.gif", "00000001.webp", "001.gif", "001.webp")
+                .asSequence()
+                .map { dir / it }
+                .firstOrNull { it.isFile }
+                ?.let { File(it.toString()) }
         } else {
             LocalFolderPageLoader.imageFiles(dir).firstOrNull()?.let { File(it.toString()) }
         }
+        val cachedJpg = File(AppConfig.localThumbDir.toString(), "${info.gid}.jpg")
+        if (firstFile != null && firstFile.isFile && firstFile.length() <= MAX_ANIMATED_THUMB_BYTES && isAnimatedImageFile(firstFile)) {
+            if (cachedJpg.isFile) cachedJpg.delete()
+            firstFile
+        } else if (animatedOnly) {
+            null
+        } else if (cachedJpg.isFile && isUsableThumb(cachedJpg)) {
+            cachedJpg
+        } else {
+            firstFile
+        }
     } ?: return@runCatching null
-    val key = "local-thumb:${resolvedFile.absolutePath}:${resolvedFile.lastModified()}:${resolvedFile.length()}"
+    val key = "local-thumb:${info.gid}:${resolvedFile.absolutePath}:${resolvedFile.lastModified()}:${resolvedFile.length()}"
     LocalThumbResult(resolvedFile, key)
 }.getOrNull()
 
@@ -312,7 +406,15 @@ private fun createArchiveThumb(archive: File, gid: Long, cachePrefix: String): F
                 .sortedWith { a, b -> LocalFolderPageLoader.NATURAL_NAME_COMPARATOR.compare(a.name, b.name) }
             for (entry in sortedEntries) {
                 if (entry.size > 32L * 1024 * 1024) continue
+                val ext = entry.name.substringAfterLast('.', "").lowercase()
                 val bytes = runCatching { zip.getInputStream(entry).use { it.readBytes() } }.getOrNull() ?: continue
+                if (ext == "gif" || isAnimatedImageHeader(bytes)) {
+                    val outExt = if (ext == "webp" || ext == "gif") ext else "gif"
+                    val animOut = File(AppConfig.localThumbDir.toString(), "$cachePrefix.$outExt")
+                    if (runCatching { animOut.writeBytes(bytes) }.isSuccess && animOut.length() > 0L) {
+                        return@use animOut
+                    }
+                }
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
                 if (bounds.outWidth <= 0 || bounds.outHeight <= 0) continue

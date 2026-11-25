@@ -142,6 +142,7 @@ fun AnimatedVisibilityScope.GalleryDetailScreen(args: GalleryDetailScreenArgs, n
                 }.getOrNull()
             galleryDetail?.let {
                 EhDB.putHistoryInfo(it)
+                launchIO { DownloadManager.syncGalleryMetadata(it) }
                 galleryInfo = it
             }
         }

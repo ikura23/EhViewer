@@ -7,6 +7,7 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
 import android.provider.Settings
 import com.ehviewer.core.database.model.DownloadInfo
@@ -14,21 +15,35 @@ import com.ehviewer.core.files.find
 import com.ehviewer.core.files.isDirectory
 import com.ehviewer.core.files.isFile
 import com.ehviewer.core.files.list
+import com.ehviewer.core.files.openFileDescriptor
 import com.ehviewer.core.files.toOkioPath
 import com.ehviewer.core.model.BaseGalleryInfo
+import com.hippo.ehviewer.client.EhEngine
+import com.hippo.ehviewer.client.EhUrl
 import com.hippo.ehviewer.client.parser.GalleryDetailUrlParser
 import com.hippo.ehviewer.gallery.LocalFolderPageLoader
 import com.hippo.ehviewer.spider.COMIC_INFO_FILE
+import com.hippo.ehviewer.spider.ComicInfo
 import com.hippo.ehviewer.spider.SpiderQueen.Companion.SPIDER_INFO_FILENAME
 import com.hippo.ehviewer.spider.readComicInfo
 import com.hippo.ehviewer.spider.readCompatFromPath
 import com.hippo.ehviewer.spider.toSimpleTags
 import com.hippo.ehviewer.util.AppConfig
 import java.io.File
+import java.io.InputStream
 import java.net.URLDecoder
 import java.nio.ByteBuffer
 import java.security.MessageDigest
 import java.util.zip.ZipFile
+import java.util.zip.ZipInputStream
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okio.Path
@@ -38,13 +53,44 @@ import okio.Path.Companion.toPath
 /**
  * 本地画廊与压缩包扫描导入器，支持免复制直接挂载设备磁盘上的既有画廊目录或 `.cbz`/`.zip` 压缩包。
  *
- * - 对于应用外部目录：保留绝对路径作为 `dirname` 并标记“本地”标签，避免移动或删除条目时误删磁盘原文件；
- * - 对于用户当前配置的自定义下载目录（含 Android SAF `content://` 文档树）及默认下载目录：
- *   自动识别归属并还原相对 `dirname`，不打“本地”标签，同时纠偏此前因重设下载目录而被误标为“本地”的条目。
+ * - 双通道扫描：即使未开启“所有文件访问权限”，也会自动通过 `downloadLocation`（兼容 SAF `content://` 与物理路径）
+ *   扫描当前应用下载目录并归属为正常下载（不打“本地”标签）；
+ * - 开启全盘权限或手动选择外部目录后，应用外部目录保留绝对路径并标记“本地”标签，避免移动或删除条目时误删磁盘原文件；
+ * - 扫描后自动在后台分批联网补全分类、作者、上传者与封面信息，并保护动图封面不被压成静态缩略图。
  */
 object LocalGalleryScanner {
     private const val LOCAL_LABEL = "本地"
     private val scanMutex = Mutex()
+    private val scanScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val stateLock = Any()
+
+    enum class ScanStage {
+        IDLE,
+        SCANNING,
+        FETCHING_METADATA,
+    }
+
+    data class Result(
+        val imported: Int,
+        val scannedDirectories: Int,
+        val roots: Int,
+        val metadataUpdated: Int = 0,
+    )
+
+    data class ScanProgress(
+        val running: Boolean = false,
+        val stage: ScanStage = ScanStage.IDLE,
+        val scanned: Int = 0,
+        val total: Int = 0,
+        val imported: Int = 0,
+        val metadataUpdated: Int = 0,
+        val completedEventId: Int = 0,
+        val lastRunUserInitiated: Boolean = false,
+        val lastResult: Result? = null,
+    )
+
+    private val _scanProgress = MutableStateFlow(ScanProgress())
+    val scanProgress: StateFlow<ScanProgress> = _scanProgress.asStateFlow()
 
     fun hasAllFilesAccess(): Boolean = Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()
 
@@ -60,11 +106,52 @@ object LocalGalleryScanner {
         }
     }
 
-    data class Result(
-        val imported: Int,
-        val scannedDirectories: Int,
-        val roots: Int,
-    )
+    /**
+     * 在全局后台作用域启动非阻塞扫描任务（页面切换、逛榜单或阅读画廊时不会中断）。
+     *
+     * @return `true` 表示成功启动新任务；`false` 表示已有扫描任务正在运行。
+     */
+    fun launchScanInBackground(
+        extraRoots: List<Path> = emptyList(),
+        onlyConfiguredDownloadDir: Boolean = false,
+        userInitiated: Boolean = false,
+    ): Boolean {
+        synchronized(stateLock) {
+            if (_scanProgress.value.running) return false
+            _scanProgress.update {
+                it.copy(
+                    running = true,
+                    stage = ScanStage.SCANNING,
+                    scanned = 0,
+                    total = 0,
+                    imported = 0,
+                    metadataUpdated = 0,
+                    lastRunUserInitiated = userInitiated,
+                )
+            }
+        }
+        scanScope.launch {
+            var scanResult: Result? = null
+            try {
+                scanResult = scan(
+                    extraRoots = extraRoots,
+                    onlyConfiguredDownloadDir = onlyConfiguredDownloadDir,
+                )
+            } finally {
+                synchronized(stateLock) {
+                    _scanProgress.update { prev ->
+                        prev.copy(
+                            running = false,
+                            stage = ScanStage.IDLE,
+                            completedEventId = prev.completedEventId + 1,
+                            lastResult = scanResult,
+                        )
+                    }
+                }
+            }
+        }
+        return true
+    }
 
     fun resolveTreePath(uri: Uri): Path? = runCatching {
         val documentId = DocumentsContract.getTreeDocumentId(uri)
@@ -79,61 +166,238 @@ object LocalGalleryScanner {
         File(base, relative).toOkioPath().takeIf { it.isDirectory }
     }.getOrNull()
 
-    suspend fun scan(extraRoots: List<Path> = emptyList()): Result = scanMutex.withLock {
+    suspend fun scan(
+        extraRoots: List<Path> = emptyList(),
+        onlyConfiguredDownloadDir: Boolean = false,
+    ): Result = scanMutex.withLock {
         val storage = Environment.getExternalStorageDirectory().toOkioPath()
         val configuredRoot = resolveConfiguredDownloadRoot(storage.toString())
         val appDownloadRoots = resolveAppDownloadRoots(configuredRoot)
-        val rawRoots = if (extraRoots.isNotEmpty()) {
-            extraRoots
-        } else {
-            discoverRoots(storage, configuredRoot)
-        }
-        val roots = deduplicateRoots(rawRoots)
+        val processedPaths = hashSetOf<String>()
         var imported = 0
         var scanned = 0
-        for (root in roots) {
-            val pending = ArrayDeque<Pair<Path, Int>>()
-            pending.addLast(root to 0)
-            while (pending.isNotEmpty()) {
-                val (dir, depth) = pending.removeLast()
-                val entries = runCatching { dir.list() }.getOrElse { continue }
-                for (entry in entries) {
-                    if (entry.isDirectory) {
-                        val gallery = looksLikeGallery(entry)
-                        if (gallery) {
-                            scanned++
-                            val item = runCatching { readLocalItem(entry) }.getOrNull()
-                            if (item != null) {
-                                importItem(item, entry, isArchive = false, configuredRoot, appDownloadRoots)?.let {
-                                    if (it) imported++
-                                }
-                                continue
-                            }
-                        }
-                        if (depth < MAX_SCAN_DEPTH) {
-                            pending.addLast(entry to depth + 1)
-                        }
-                        continue
-                    }
+        var rootCount = 0
 
-                    if (!isArchiveFile(entry)) continue
-                    if (!isReadableArchive(entry)) continue
-                    scanned++
-                    val item = runCatching { readArchiveItem(entry) }.getOrNull() ?: continue
-                    if (importItem(item, entry, isArchive = true, configuredRoot, appDownloadRoots) == true) {
-                        imported++
+        fun updateScanningProgress(totalHint: Int) {
+            _scanProgress.update {
+                if (!it.running) it else it.copy(
+                    stage = ScanStage.SCANNING,
+                    scanned = scanned,
+                    total = maxOf(it.total, totalHint, scanned),
+                    imported = imported,
+                )
+            }
+        }
+
+        // 通道一：免 AllFilesAccess 直接通过 downloadLocation 扫描当前配置的下载目录（兼容 SAF 与物理路径）
+        if (extraRoots.isEmpty()) {
+            val currentDownloadDir = runCatching { downloadLocation }.getOrNull()
+            if (currentDownloadDir != null && runCatching { currentDownloadDir.isDirectory }.getOrDefault(false)) {
+                rootCount++
+                val children = runCatching { currentDownloadDir.list() }.getOrDefault(emptyList())
+                updateScanningProgress(children.size)
+                for (entry in children) {
+                    val isDir = runCatching { entry.isDirectory }.getOrDefault(false)
+                    if (isDir) {
+                        if (!looksLikeGallery(entry)) continue
+                        scanned++
+                        val item = runCatching { readLocalItem(entry) }.getOrNull()
+                        if (item != null) {
+                            val forcedTarget = resolveConfiguredEntryTarget(
+                                entry = entry,
+                                isArchive = false,
+                                configuredRoot = configuredRoot,
+                                appDownloadRoots = appDownloadRoots,
+                            )
+                            if (importItem(item, entry, isArchive = false, configuredRoot = configuredRoot, appDownloadRoots = appDownloadRoots, overrideTarget = forcedTarget) == true) {
+                                imported++
+                            }
+                            markProcessed(processedPaths, entry, configuredRoot)
+                        }
+                        updateScanningProgress(children.size)
+                    } else if (isArchiveFile(entry) && isReadableArchivePath(entry)) {
+                        scanned++
+                        val item = runCatching { readArchiveItem(entry) }.getOrNull()
+                        if (item != null) {
+                            val forcedTarget = resolveConfiguredEntryTarget(
+                                entry = entry,
+                                isArchive = true,
+                                configuredRoot = configuredRoot,
+                                appDownloadRoots = appDownloadRoots,
+                            )
+                            if (importItem(item, entry, isArchive = true, configuredRoot = configuredRoot, appDownloadRoots = appDownloadRoots, overrideTarget = forcedTarget) == true) {
+                                imported++
+                            }
+                            markProcessed(processedPaths, entry, configuredRoot)
+                        }
+                        updateScanningProgress(children.size)
                     }
                 }
             }
         }
-        Result(imported, scanned, roots.size)
+
+        // 通道二：具备所有文件访问权限或用户显式选取外部目录时，递归扫描全盘常见画廊目录
+        val scanExternalRoots = extraRoots.isNotEmpty() || (!onlyConfiguredDownloadDir && hasAllFilesAccess())
+        if (scanExternalRoots) {
+            val rawRoots = if (extraRoots.isNotEmpty()) {
+                extraRoots
+            } else {
+                discoverRoots(storage, configuredRoot)
+            }
+            val roots = deduplicateRoots(rawRoots)
+            rootCount += roots.size
+            for (root in roots) {
+                val pending = ArrayDeque<Pair<Path, Int>>()
+                pending.addLast(root to 0)
+                while (pending.isNotEmpty()) {
+                    val (dir, depth) = pending.removeLast()
+                    val entries = runCatching { dir.list() }.getOrElse { continue }
+                    for (entry in entries) {
+                        val entryKey = canonicalPath(entry)
+                        if (entry.isDirectory) {
+                            val gallery = looksLikeGallery(entry)
+                            if (gallery) {
+                                if (entryKey in processedPaths) continue
+                                scanned++
+                                val item = runCatching { readLocalItem(entry) }.getOrNull()
+                                if (item != null) {
+                                    if (importItem(item, entry, isArchive = false, configuredRoot = configuredRoot, appDownloadRoots = appDownloadRoots) == true) {
+                                        imported++
+                                    }
+                                    processedPaths += entryKey
+                                    updateScanningProgress(scanned + pending.size)
+                                    continue
+                                }
+                                updateScanningProgress(scanned + pending.size)
+                            }
+                            if (depth < MAX_SCAN_DEPTH) {
+                                pending.addLast(entry to depth + 1)
+                            }
+                            continue
+                        }
+
+                        if (!isArchiveFile(entry) || entryKey in processedPaths) continue
+                        if (!isReadableArchivePath(entry)) continue
+                        scanned++
+                        val item = runCatching { readArchiveItem(entry) }.getOrNull() ?: continue
+                        if (importItem(item, entry, isArchive = true, configuredRoot = configuredRoot, appDownloadRoots = appDownloadRoots) == true) {
+                            imported++
+                        }
+                        processedPaths += entryKey
+                        updateScanningProgress(scanned + pending.size)
+                    }
+                }
+            }
+        }
+
+        // 阶段二：自动联网批量补全缺少分类、作者、上传者或远程封面的画廊元数据
+        val metadataUpdated = enrichMissingMetadata()
+        Result(
+            imported = imported,
+            scannedDirectories = scanned,
+            roots = rootCount,
+            metadataUpdated = metadataUpdated,
+        )
+    }
+
+    private fun markProcessed(processedPaths: MutableSet<String>, entry: Path, configuredRoot: String?) {
+        processedPaths += canonicalPath(entry)
+        val raw = entry.toString()
+        if (!raw.startsWith("/") && configuredRoot != null) {
+            processedPaths += canonicalPath("$configuredRoot/${entry.name}")
+        }
+    }
+
+    private fun resolveConfiguredEntryTarget(
+        entry: Path,
+        isArchive: Boolean,
+        configuredRoot: String?,
+        appDownloadRoots: List<String>,
+    ): ImportTarget {
+        val raw = entry.toString()
+        if (raw.startsWith("/")) {
+            return resolveImportTarget(
+                entryCanonicalPath = canonicalPath(entry),
+                configuredDownloadRoot = configuredRoot,
+                appDownloadRoots = appDownloadRoots,
+                isArchive = isArchive,
+            )
+        }
+        if (!isArchive) {
+            // SAF 模式下位于下载目录的一级画廊目录直接用相对子目录名，不打“本地”标签
+            return ImportTarget(
+                dirname = entry.name,
+                label = null,
+                isInsideAppDownloadDir = true,
+            )
+        }
+        val physicalArchive = configuredRoot?.let { "$it/${entry.name}" }
+        return ImportTarget(
+            dirname = physicalArchive ?: raw,
+            label = null,
+            isInsideAppDownloadDir = true,
+        )
+    }
+
+    private suspend fun enrichMissingMetadata(): Int {
+        val candidates = DownloadManager.downloadInfoList.filter { info ->
+            info.gid > 0L &&
+                isValidGalleryHexToken(info.token) &&
+                (
+                    info.category == 0 ||
+                        info.uploader.isNullOrBlank() ||
+                        info.thumbKey.isNullOrBlank() ||
+                        '/' !in info.thumbKey!!
+                    )
+        }.map { info ->
+            BaseGalleryInfo(gid = info.gid, token = info.token)
+        }
+        if (candidates.isEmpty()) return 0
+
+        var processed = 0
+        var updated = 0
+        _scanProgress.update {
+            if (!it.running) it else it.copy(
+                stage = ScanStage.FETCHING_METADATA,
+                scanned = 0,
+                total = candidates.size,
+                metadataUpdated = 0,
+            )
+        }
+
+        for (batch in candidates.chunked(25)) {
+            runCatching {
+                EhEngine.fillGalleryListByApi(batch, EhUrl.referer)
+            }.onSuccess {
+                for (filled in batch) {
+                    if (filled.category != 0 || !filled.uploader.isNullOrBlank() || !filled.simpleTags.isNullOrEmpty()) {
+                        if (DownloadManager.syncGalleryMetadata(filled)) {
+                            updated++
+                        }
+                    }
+                }
+            }
+            processed += batch.size
+            _scanProgress.update {
+                if (!it.running) it else it.copy(
+                    stage = ScanStage.FETCHING_METADATA,
+                    scanned = processed,
+                    total = candidates.size,
+                    metadataUpdated = updated,
+                )
+            }
+        }
+        return updated
     }
 
     private fun canonicalPath(path: Path): String = canonicalPath(path.toString())
 
-    private fun canonicalPath(raw: String): String = runCatching {
-        File(raw).canonicalPath
-    }.getOrElse { raw }.trimEnd('/').ifEmpty { "/" }
+    private fun canonicalPath(raw: String): String {
+        if (!raw.startsWith("/")) return raw
+        return runCatching {
+            File(raw).canonicalPath
+        }.getOrElse { raw }.trimEnd('/').ifEmpty { "/" }
+    }
 
     private fun resolveConfiguredDownloadRoot(externalStorageRoot: String): String? {
         val raw = runCatching { downloadLocation.toString() }.getOrNull() ?: return null
@@ -164,11 +428,12 @@ object LocalGalleryScanner {
         isArchive: Boolean,
         configuredRoot: String?,
         appDownloadRoots: List<String>,
+        overrideTarget: ImportTarget? = null,
     ): Boolean? {
         if (isArchive) {
             runCatching { ensureArchiveThumb(path, item.gid) }
         }
-        val target = resolveImportTarget(
+        val target = overrideTarget ?: resolveImportTarget(
             entryCanonicalPath = canonicalPath(path),
             configuredDownloadRoot = configuredRoot,
             appDownloadRoots = appDownloadRoots,
@@ -209,8 +474,10 @@ object LocalGalleryScanner {
         dir.list().any {
             it.name == COMIC_INFO_FILE ||
                 it.name == SPIDER_INFO_FILENAME ||
-                it.name.lowercase() != "thumb.webp" &&
-                it.name.substringAfterLast('.', "").lowercase() in IMAGE_EXTENSIONS
+                (
+                    it.name.lowercase() != "thumb.webp" &&
+                        it.name.substringAfterLast('.', "").lowercase() in IMAGE_EXTENSIONS
+                    )
         }
     }.getOrDefault(false)
 
@@ -319,59 +586,121 @@ object LocalGalleryScanner {
         return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
     }
 
+    private fun openArchiveInputStream(path: Path): InputStream =
+        if (path.toString().startsWith("/")) {
+            File(path.toString()).inputStream()
+        } else {
+            ParcelFileDescriptor.AutoCloseInputStream(path.openFileDescriptor("r"))
+        }
+
     private fun writeArchiveThumb(file: Path, gid: Long) {
         if (file.name.substringAfterLast('.', "").lowercase() !in ARCHIVE_EXTENSIONS) return
         val cachePrefix = archiveThumbCachePrefix(file, gid)
-        ZipFile(file.toString()).use { zip ->
-            val sortedEntries = zip.entries().toList()
-                .filter { !it.isDirectory && isArchiveImageEntry(it.name) }
-                .sortedWith { a, b -> LocalFolderPageLoader.NATURAL_NAME_COMPARATOR.compare(a.name, b.name) }
-            for (entry in sortedEntries) {
-                if (entry.size > MAX_THUMB_SOURCE_BYTES) continue
-                val entryExtension = entry.name.substringAfterLast('.', "").lowercase()
-                val bytes = runCatching { zip.getInputStream(entry).use { it.readBytes() } }.getOrNull() ?: continue
-                if (entryExtension == "gif" || entryExtension == "webp") {
-                    val animated = File(AppConfig.localThumbDir.toString(), "$cachePrefix.$entryExtension")
-                    runCatching { animated.writeBytes(bytes) }.onSuccess { return }
+        if (file.toString().startsWith("/")) {
+            ZipFile(file.toString()).use { zip ->
+                val sortedEntries = zip.entries().toList()
+                    .filter { !it.isDirectory && isArchiveImageEntry(it.name) }
+                    .sortedWith { a, b -> LocalFolderPageLoader.NATURAL_NAME_COMPARATOR.compare(a.name, b.name) }
+                for (entry in sortedEntries) {
+                    if (entry.size > MAX_THUMB_SOURCE_BYTES) continue
+                    val entryExtension = entry.name.substringAfterLast('.', "").lowercase()
+                    val bytes = runCatching { zip.getInputStream(entry).use { it.readBytes() } }.getOrNull() ?: continue
+                    if (saveArchiveEntryThumbBytes(bytes, entryExtension, gid, cachePrefix)) return
                 }
-                val bitmap = decodeDownsampledBitmap(bytes, 320) ?: continue
-                if (bitmap.width <= 0 || bitmap.height <= 0) {
-                    bitmap.recycle()
-                    continue
+            }
+            return
+        }
+        // SAF 归档降级流式扫描首个合法图像条目
+        runCatching {
+            openArchiveInputStream(file).use { rawStream ->
+                ZipInputStream(rawStream).use { zis ->
+                    var bestName: String? = null
+                    var bestBytes: ByteArray? = null
+                    while (true) {
+                        val entry = zis.nextEntry ?: break
+                        if (!entry.isDirectory && isArchiveImageEntry(entry.name) && entry.size <= MAX_THUMB_SOURCE_BYTES) {
+                            if (bestName == null || LocalFolderPageLoader.NATURAL_NAME_COMPARATOR.compare(entry.name, bestName) < 0) {
+                                val bytes = runCatching { zis.readBytes() }.getOrNull()
+                                if (bytes != null && bytes.isNotEmpty()) {
+                                    bestName = entry.name
+                                    bestBytes = bytes
+                                }
+                            }
+                        }
+                        zis.closeEntry()
+                    }
+                    if (bestName != null && bestBytes != null) {
+                        val ext = bestName.substringAfterLast('.', "").lowercase()
+                        saveArchiveEntryThumbBytes(bestBytes, ext, gid, cachePrefix)
+                    }
                 }
-                val width = 320
-                val height = (bitmap.height.toFloat() * width / bitmap.width).toInt().coerceAtLeast(1)
-                val scaled = Bitmap.createScaledBitmap(bitmap, width, height, true)
-                val archiveThumb = File(archiveThumbPath(gid).toString())
-                val cachedThumb = File(AppConfig.localThumbDir.toString(), "$cachePrefix.jpg")
-                val written = runCatching {
-                    cachedThumb.outputStream().use { scaled.compress(Bitmap.CompressFormat.JPEG, 82, it) }
-                    archiveThumb.outputStream().use { scaled.compress(Bitmap.CompressFormat.JPEG, 82, it) }
-                }.isSuccess
-                if (scaled !== bitmap) scaled.recycle()
-                bitmap.recycle()
-                if (written) return
             }
         }
     }
 
+    private fun saveArchiveEntryThumbBytes(
+        bytes: ByteArray,
+        entryExtension: String,
+        gid: Long,
+        cachePrefix: String,
+    ): Boolean {
+        if (entryExtension == "gif" || isAnimatedImageHeader(bytes)) {
+            val outExt = if (entryExtension == "webp" || entryExtension == "gif") entryExtension else "gif"
+            val animated = File(AppConfig.localThumbDir.toString(), "$cachePrefix.$outExt")
+            if (runCatching { animated.writeBytes(bytes) }.isSuccess) return true
+        }
+        val bitmap = decodeDownsampledBitmap(bytes, 320) ?: return false
+        if (bitmap.width <= 0 || bitmap.height <= 0) {
+            bitmap.recycle()
+            return false
+        }
+        val width = 320
+        val height = (bitmap.height.toFloat() * width / bitmap.width).toInt().coerceAtLeast(1)
+        val scaled = Bitmap.createScaledBitmap(bitmap, width, height, true)
+        val archiveThumb = File(archiveThumbPath(gid).toString())
+        val cachedThumb = File(AppConfig.localThumbDir.toString(), "$cachePrefix.jpg")
+        val written = runCatching {
+            cachedThumb.outputStream().use { scaled.compress(Bitmap.CompressFormat.JPEG, 82, it) }
+            archiveThumb.outputStream().use { scaled.compress(Bitmap.CompressFormat.JPEG, 82, it) }
+        }.isSuccess
+        if (scaled !== bitmap) scaled.recycle()
+        bitmap.recycle()
+        return written
+    }
+
     private fun isArchiveFile(path: Path): Boolean = path.name.substringAfterLast('.', "").lowercase() in ARCHIVE_EXTENSIONS
 
-    /** Only import an archive that actually contains at least one image page. */
-    private fun isReadableArchive(path: Path): Boolean = countArchivePages(path) > 0
+    /** 仅当压缩包内部至少包含一张有效图片时才导入（兼容物理路径与 SAF 文档）。 */
+    private fun isReadableArchivePath(path: Path): Boolean = countArchivePages(path) > 0
 
-    /** Count image entries without extracting or copying the archive. */
+    /** 统计压缩包内的图片数量，不解压不复制原始压缩包。 */
     private fun countArchivePages(path: Path): Int = runCatching {
-        ZipFile(path.toString()).use { zip ->
-            val entries = zip.entries()
-            var count = 0
-            while (entries.hasMoreElements()) {
-                val name = entries.nextElement().name
-                if (isArchiveImageEntry(name)) {
-                    count++
+        if (path.toString().startsWith("/")) {
+            ZipFile(path.toString()).use { zip ->
+                val entries = zip.entries()
+                var count = 0
+                while (entries.hasMoreElements()) {
+                    val name = entries.nextElement().name
+                    if (isArchiveImageEntry(name)) {
+                        count++
+                    }
+                }
+                count
+            }
+        } else {
+            openArchiveInputStream(path).use { rawStream ->
+                ZipInputStream(rawStream).use { zis ->
+                    var count = 0
+                    while (true) {
+                        val entry = zis.nextEntry ?: break
+                        if (!entry.isDirectory && isArchiveImageEntry(entry.name)) {
+                            count++
+                        }
+                        zis.closeEntry()
+                    }
+                    count
                 }
             }
-            count
         }
     }.getOrDefault(0)
 
@@ -386,8 +715,7 @@ object LocalGalleryScanner {
     }
 
     /**
-     * Import a .cbz/.zip without extracting or copying it. The archive path is stored as the
-     * DownloadInfo dirname and ReaderScreen sends it to useArchivePageLoader().
+     * 无解压直接导入 `.cbz`/`.zip` 压缩包，完整路径存入 `dirname`，阅读时直接交由 `useArchivePageLoader`。
      */
     private fun readArchiveItem(file: Path): LocalItem? {
         val base = file.name.substringBeforeLast('.')
@@ -404,37 +732,61 @@ object LocalGalleryScanner {
         return LocalItem(info, gid, pages)
     }
 
+    private fun ComicInfo.toNormalizedSimpleTags(): List<String>? {
+        val merged = linkedSetOf<String>()
+        writer?.forEach { name ->
+            val trimmed = name.trim()
+            if (trimmed.isNotEmpty()) {
+                merged += if (':' in trimmed) trimmed else "group:$trimmed"
+            }
+        }
+        penciller?.forEach { name ->
+            val trimmed = name.trim()
+            if (trimmed.isNotEmpty()) {
+                merged += if (':' in trimmed) trimmed else "artist:$trimmed"
+            }
+        }
+        toSimpleTags()?.forEach { tag ->
+            val trimmed = tag.trim()
+            if (trimmed.isNotEmpty()) merged += trimmed
+        }
+        return merged.toList().ifEmpty { null }
+    }
+
     private fun readLocalItem(dir: Path): LocalItem? {
         val spider = dir.find(SPIDER_INFO_FILENAME)?.let { readCompatFromPath(it) }
         val comic = dir.find(COMIC_INFO_FILE)?.let { readComicInfo(it) }
         val parsed = comic?.web?.let { GalleryDetailUrlParser.parse(it) }
 
-        // Older EhViewer forks often only have a "gid-token" or "gid_token" folder name.
+        // 旧版或第三方目录可能以 "gid-token"、"gid_token" 或 "gid-标题" 命名
         val folderName = dir.name
         val folderGid = folderName.substringBefore('-').toLongOrNull()
             ?: folderName.substringBefore('_').toLongOrNull()
-        val folderToken = folderName.substringAfter('-', "")
+        val rawFolderSuffix = folderName.substringAfter('-', "")
             .ifBlank { folderName.substringAfter('_', "") }
         val gid = spider?.gid ?: parsed?.gid ?: folderGid ?: return null
-        val token = spider?.token ?: parsed?.token ?: folderToken.ifBlank { null } ?: return null
+        // 仅当目录后缀为规范 10 位十六进制 token 时才采纳，防止把 "[Ka..." 等标题片段误存为假 token
+        val token = spider?.token?.takeIf { it.isNotBlank() }
+            ?: parsed?.token?.takeIf { it.isNotBlank() }
+            ?: rawFolderSuffix.takeIf(::isValidGalleryHexToken)
+            ?: ""
 
-        // 没有实际图片的空目录绝不能导入为已完成；有声明页数时必须满足 actualPages >= declaredPages，
-        // 避免把未下完或刚建目录的 0/531、9/531 下载目录误判为完整本地图集。
+        // 只要目录内存在有效图片即可导入本地记录；已有未完成下载的任务在 importItem 中受 state != STATE_FINISH 保护
         val actualPages = countPages(dir)
         if (actualPages <= 0) return null
-        val declaredPages = comic?.pageCount?.takeIf { it > 0 }
-            ?: spider?.pages?.takeIf { it > 0 }
-        if (declaredPages != null && actualPages < declaredPages) return null
         val pages = actualPages
 
         val info = BaseGalleryInfo(gid, token).apply {
             title = cleanTitle(comic?.series?.takeIf { it.isNotBlank() } ?: folderName)
+            titleJpn = comic?.alternateSeries?.takeIf { it.isNotBlank() }
+            comic?.communityRating?.toFloatOrNull()?.let { rating = it }
+            comic?.languageISO?.takeIf { it.isNotBlank() }?.let { simpleLanguage = it }
             this.pages = pages
-            simpleTags = comic?.let { it.toSimpleTags() } ?: emptyList()
+            simpleTags = comic?.toNormalizedSimpleTags() ?: emptyList()
         }
 
-        // 只读扫描外部目录，不覆写磁盘上的 .ehviewer 文件。
-        // 使用自然排序后的第一张真实图片生成列表封面缓存。
+        // 只读扫描目录，不修改磁盘原有 .ehviewer 文件。
+        // 仅当第一张真实图片不是动图时生成静态封面缓存；动图直接交由列表页播放原图。
         val firstImage = LocalFolderPageLoader.imageFiles(dir).firstOrNull()
         if (firstImage != null) {
             info.thumbKey = firstImage.name
@@ -445,13 +797,41 @@ object LocalGalleryScanner {
 
     private fun cleanTitle(value: String): String = value.replace(Regex("^\\s*\\d+\\s*[-_]\\s*"), "").trim().ifBlank { value }
 
+    private fun isAnimatedImagePath(path: Path): Boolean = runCatching {
+        if (path.toString().startsWith("/")) {
+            isAnimatedImageFile(File(path.toString()))
+        } else {
+            ParcelFileDescriptor.AutoCloseInputStream(path.openFileDescriptor("r")).use { input ->
+                val buf = ByteArray(4096)
+                val read = input.read(buf)
+                read > 0 && isAnimatedImageHeader(buf, read)
+            }
+        }
+    }.getOrDefault(false)
+
+    private fun readPathBytesLimited(path: Path, maxBytes: Long): ByteArray? = runCatching {
+        if (path.toString().startsWith("/")) {
+            val file = File(path.toString())
+            if (!file.isFile || file.length() > maxBytes) return null
+            file.readBytes()
+        } else {
+            ParcelFileDescriptor.AutoCloseInputStream(path.openFileDescriptor("r")).use { input ->
+                val bytes = input.readBytes()
+                bytes.takeIf { it.size.toLong() <= maxBytes }
+            }
+        }
+    }.getOrNull()
+
     private fun writeLocalThumb(file: Path, gid: Long) {
         runCatching {
             val target = File(AppConfig.localThumbDir.toString(), "$gid.jpg")
+            // 动图封面禁止预压成静态 .jpg，否则下载列表中将无法播放动画
+            if (isAnimatedImagePath(file)) {
+                if (target.isFile) target.delete()
+                return
+            }
             if (target.isFile) return
-            val raw = File(file.toString())
-            if (!raw.isFile || raw.length() > MAX_THUMB_SOURCE_BYTES) return
-            val bytes = raw.readBytes()
+            val bytes = readPathBytesLimited(file, MAX_THUMB_SOURCE_BYTES) ?: return
             val bitmap = decodeDownsampledBitmap(bytes, 320) ?: return
             val width = 320
             val height = (bitmap.height.toFloat() * width / bitmap.width).toInt().coerceAtLeast(1)
@@ -488,6 +868,75 @@ internal data class ImportTarget(
     val label: String?,
     val isInsideAppDownloadDir: Boolean,
 )
+
+private val GALLERY_HEX_TOKEN_REGEX = Regex("^[0-9a-fA-F]{10}$")
+
+/**
+ * 校验字符串是否为规范的 10 位十六进制 E-Hentai 画廊 Token。
+ */
+internal fun isValidGalleryHexToken(token: String?): Boolean =
+    !token.isNullOrBlank() && GALLERY_HEX_TOKEN_REGEX.matches(token.trim())
+
+/**
+ * 基于文件头魔数识别图片字节是否为真动图：
+ * - 支持 `GIF87a` / `GIF89a`；
+ * - 支持 RIFF WebP 容器内包含 `ANIM` 块的动态 WebP（自动排除静态 WebP）。
+ */
+fun isAnimatedImageHeader(bytes: ByteArray, length: Int = bytes.size): Boolean {
+    val limit = minOf(length, bytes.size)
+    if (limit >= 6 &&
+        bytes[0] == 'G'.code.toByte() &&
+        bytes[1] == 'I'.code.toByte() &&
+        bytes[2] == 'F'.code.toByte() &&
+        bytes[3] == '8'.code.toByte() &&
+        (bytes[4] == '7'.code.toByte() || bytes[4] == '9'.code.toByte()) &&
+        bytes[5] == 'a'.code.toByte()
+    ) {
+        return true
+    }
+    if (limit >= 12 &&
+        bytes[0] == 'R'.code.toByte() &&
+        bytes[1] == 'I'.code.toByte() &&
+        bytes[2] == 'F'.code.toByte() &&
+        bytes[3] == 'F'.code.toByte() &&
+        bytes[8] == 'W'.code.toByte() &&
+        bytes[9] == 'E'.code.toByte() &&
+        bytes[10] == 'B'.code.toByte() &&
+        bytes[11] == 'P'.code.toByte()
+    ) {
+        var offset = 12
+        while (offset + 8 <= limit) {
+            if (bytes[offset] == 'A'.code.toByte() &&
+                bytes[offset + 1] == 'N'.code.toByte() &&
+                bytes[offset + 2] == 'I'.code.toByte() &&
+                bytes[offset + 3] == 'M'.code.toByte()
+            ) {
+                return true
+            }
+            val chunkSize = ((bytes[offset + 4].toLong() and 0xFFL)) or
+                ((bytes[offset + 5].toLong() and 0xFFL) shl 8) or
+                ((bytes[offset + 6].toLong() and 0xFFL) shl 16) or
+                ((bytes[offset + 7].toLong() and 0xFFL) shl 24)
+            val paddedSize = chunkSize + (chunkSize and 1L)
+            val nextOffset = offset + 8L + paddedSize
+            if (nextOffset <= offset || nextOffset > limit) break
+            offset = nextOffset.toInt()
+        }
+    }
+    return false
+}
+
+/**
+ * 读取磁盘图片文件前 4 KiB 判断是否为 GIF / 动态 WebP 动图，避免全量解码耗时。
+ */
+fun isAnimatedImageFile(file: File): Boolean = runCatching {
+    if (!file.isFile) return@runCatching false
+    file.inputStream().use { input ->
+        val buf = ByteArray(4096)
+        val read = input.read(buf)
+        read > 0 && isAnimatedImageHeader(buf, read)
+    }
+}.getOrDefault(false)
 
 /**
  * 将用户设置的 `downloadLocation`（绝对路径或 Android SAF `content://` 文档树 URI）解析为磁盘真实路径，
