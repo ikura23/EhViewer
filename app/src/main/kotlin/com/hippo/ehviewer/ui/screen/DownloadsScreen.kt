@@ -16,10 +16,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
@@ -29,6 +31,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
+import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
 import androidx.compose.foundation.lazy.staggeredgrid.items
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
@@ -56,6 +59,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SwipeToDismissBoxDefaults
@@ -64,6 +68,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.fork.SwipeToDismissBox
 import androidx.compose.material3.fork.SwipeToDismissBoxState
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -96,6 +101,7 @@ import arrow.core.partially1
 import com.ehviewer.core.database.model.DownloadInfo
 import com.ehviewer.core.i18n.R
 import com.ehviewer.core.model.TagNamespace
+import com.ehviewer.core.ui.component.CrystalCard
 import com.ehviewer.core.ui.component.FAB_ANIMATE_TIME
 import com.ehviewer.core.ui.component.FabLayout
 import com.ehviewer.core.ui.component.FastScrollLazyColumn
@@ -125,8 +131,11 @@ import com.hippo.ehviewer.collectAsState
 import com.hippo.ehviewer.download.DownloadManager
 import com.hippo.ehviewer.download.DownloadService
 import com.hippo.ehviewer.download.DownloadsFilterMode
+import com.hippo.ehviewer.download.GalleryUpdateProgress
+import com.hippo.ehviewer.download.GalleryUpdateTracker
 import com.hippo.ehviewer.download.LocalGalleryScanner
 import com.hippo.ehviewer.download.SortMode
+import com.hippo.ehviewer.download.UpdateStage
 import com.hippo.ehviewer.ui.DrawerHandle
 import com.hippo.ehviewer.ui.Screen
 import com.hippo.ehviewer.ui.confirmRemoveDownloadRange
@@ -168,6 +177,7 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
     val appResources = LocalResources.current
     val metadataRevision = DownloadManager.metadataRevision
     val scanProgress by LocalGalleryScanner.scanProgress.collectAsState()
+    val updateProgress by GalleryUpdateTracker.progress.collectAsState()
     val showTagTranslations by Settings.showTagTranslations.collectAsState()
 
     LaunchedEffect(showTagTranslations, EhTagDatabase.initialized) {
@@ -175,8 +185,8 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
             EhTagDatabase.ensureInitialized()
         }
     }
-    LaunchedEffect(scanProgress.completedEventId, metadataRevision) {
-        if (scanProgress.completedEventId > 0 || metadataRevision > 0) {
+    LaunchedEffect(scanProgress.completedEventId, metadataRevision, updateProgress.finishedEventId) {
+        if (scanProgress.completedEventId > 0 || metadataRevision > 0 || updateProgress.finishedEventId > 0) {
             invalidateKey = !invalidateKey
         }
     }
@@ -265,6 +275,18 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
         }
     } else {
         remember { mutableStateListOf() }
+    }
+
+    // 监听下载清单成员增删（如后台增量更新入列新版、完成替换移除旧版），立即刷新当前列表
+    LaunchedEffect(filterState, invalidateKey) {
+        if (!DownloadManager.isInitialized) return@LaunchedEffect
+        DownloadManager.notifyFlow.collect {
+            val expectedIds = DownloadManager.downloadInfoList.filter { filterState.take(it) }.mapTo(hashSetOf()) { it.gid }
+            val currentIds = list.mapTo(hashSetOf()) { it.gid }
+            if (expectedIds != currentIds) {
+                invalidateKey = !invalidateKey
+            }
+        }
     }
 
     val newLabel = stringResource(R.string.new_label_title)
@@ -693,6 +715,11 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
                     verticalItemSpacing = gridInterval,
                     horizontalArrangement = Arrangement.spacedBy(gridInterval),
                 ) {
+                    if (updateProgress.running) {
+                        item(key = "gallery-update-progress", span = StaggeredGridItemSpan.FullLine) {
+                            GalleryUpdateProgressCard(progress = updateProgress)
+                        }
+                    }
                     items(list, key = { it.gid }) { info ->
                         GalleryInfoGridItem(
                             onClick = ::onItemClick.partially1(info),
@@ -718,6 +745,11 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
                     contentPadding = realPadding,
                     verticalArrangement = Arrangement.spacedBy(dimensionResource(com.hippo.ehviewer.R.dimen.gallery_list_interval)),
                 ) {
+                    if (updateProgress.running) {
+                        item(key = "gallery-update-progress") {
+                            GalleryUpdateProgressCard(progress = updateProgress)
+                        }
+                    }
                     itemsIndexed(list, key = { _, info -> info.gid }) { _, info ->
                         val checked = info.gid in checkedInfoMap
                         ReorderableItem(
@@ -782,7 +814,7 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
             Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface), contentAlignment = Alignment.Center) {
                 CircularWavyProgressIndicator()
             }
-        } else if (list.isEmpty()) {
+        } else if (list.isEmpty() && !updateProgress.running) {
             Column(
                 modifier = Modifier.padding(realPadding).fillMaxSize(),
                 verticalArrangement = Arrangement.Center,
@@ -887,6 +919,62 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
                         list.removeAll(infoList)
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GalleryUpdateProgressCard(
+    progress: GalleryUpdateProgress,
+    modifier: Modifier = Modifier,
+) {
+    val stageText = when (progress.stage) {
+        UpdateStage.FETCHING_DETAIL -> stringResource(R.string.download_update_stage_detail)
+        UpdateStage.COMPARING_PAGES -> if (progress.total > 0) {
+            stringResource(R.string.download_update_stage_compare, progress.current, progress.total)
+        } else {
+            stringResource(R.string.download_update_preparing)
+        }
+        UpdateStage.COPYING_REUSABLE -> if (progress.total > 0) {
+            stringResource(R.string.download_update_stage_copy, progress.current, progress.total)
+        } else {
+            stringResource(R.string.download_update_preparing)
+        }
+        UpdateStage.STARTING_DOWNLOAD -> stringResource(R.string.download_update_stage_enqueue)
+        UpdateStage.IDLE -> ""
+    }
+    CrystalCard(modifier = modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                text = progress.title.ifBlank { stringResource(R.string.download_update) },
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = stageText,
+                    modifier = Modifier.weight(1f),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelMedium,
+                )
+                if (progress.total > 0) {
+                    Text(
+                        text = "${progress.current}/${progress.total}",
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+            if (progress.total > 0) {
+                LinearWavyProgressIndicator(
+                    progress = { (progress.current.toFloat() / progress.total).coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            } else {
+                LinearWavyProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
         }
     }

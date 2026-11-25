@@ -1,8 +1,11 @@
 package com.hippo.ehviewer.download
 
 import com.ehviewer.core.model.BaseGalleryInfo
+import com.hippo.ehviewer.spider.SpiderInfo
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class GalleryUpdateHelperTest {
@@ -62,5 +65,31 @@ class GalleryUpdateHelperTest {
         val v2 = BaseGalleryInfo(gid = 200L, token = "t2", title = "V2")
         assertNull(latestNewerVersion(emptyList()))
         assertEquals(200L, latestNewerVersion(listOf(v1, v2))?.gid)
+    }
+
+    @Test
+    fun checksWhetherLocalSpiderInfoCoversRequiredOldPTokens() {
+        assertTrue(hasAllRequiredOldPTokens(null, emptySet(), hasArchive = false))
+        assertFalse(hasAllRequiredOldPTokens(null, setOf(0, 1), hasArchive = false))
+        assertFalse(hasAllRequiredOldPTokens(null, emptySet(), hasArchive = true))
+
+        val partial = SpiderInfo(
+            gid = 100L,
+            token = "abcdef0123",
+            pages = 100,
+            pTokenMap = hashMapOf(0 to "t0", 1 to "t1", 2 to ""),
+        )
+        assertTrue(hasAllRequiredOldPTokens(partial, setOf(0, 1), hasArchive = false))
+        assertFalse(hasAllRequiredOldPTokens(partial, setOf(0, 2), hasArchive = false))
+        assertFalse(hasAllRequiredOldPTokens(partial, setOf(0, 5), hasArchive = false))
+        assertFalse(hasAllRequiredOldPTokens(partial, emptySet(), hasArchive = true))
+
+        val fullArchive = SpiderInfo(
+            gid = 101L,
+            token = "abcdef0124",
+            pages = 2,
+            pTokenMap = hashMapOf(0 to "a", 1 to "b"),
+        )
+        assertTrue(hasAllRequiredOldPTokens(fullArchive, emptySet(), hasArchive = true))
     }
 }

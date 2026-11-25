@@ -674,7 +674,17 @@
     <string name="error_cookie_cannot_empty">Cookie cannot be empty</string>
     <string name="error_cookie_invalid_format">Invalid cookie format (contains spaces or illegal characters)</string>
     <string name="download_update">Update</string>
+    <string name="download_update_action_incremental">Incremental update (reuse old pages and replace)</string>
+    <string name="download_update_action_full">Download full new version (keep old)</string>
+    <string name="download_update_action_open_newer">View new version</string>
+    <string name="download_update_action_delete_current">Delete downloaded version</string>
     <string name="download_update_preparing">Checking updated pages…</string>
+    <string name="download_update_started_bg">Update started in background; track progress on the Downloads page</string>
+    <string name="download_update_running">Another gallery update is already running</string>
+    <string name="download_update_stage_detail">Fetching new gallery details…</string>
+    <string name="download_update_stage_compare">Comparing pages (%1$d/%2$d)…</string>
+    <string name="download_update_stage_copy">Reusing local pages (%1$d/%2$d)…</string>
+    <string name="download_update_stage_enqueue">Starting download…</string>
     <string name="download_update_started">Reused %1$d pages, downloading %2$d updated pages</string>
     <string name="download_update_all_reused">Reused all %1$d pages, finishing upgrade…</string>
     <string name="download_update_failed">Failed to prepare update: %1$s</string>

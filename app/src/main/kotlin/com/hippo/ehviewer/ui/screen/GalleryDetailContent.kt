@@ -124,9 +124,9 @@ import com.hippo.ehviewer.coil.justDownload
 import com.hippo.ehviewer.collectAsState
 import com.hippo.ehviewer.download.DownloadManager
 import com.hippo.ehviewer.download.DownloadService
+import com.hippo.ehviewer.download.GalleryUpdateTracker
 import com.hippo.ehviewer.download.latestNewerVersion
 import com.hippo.ehviewer.download.parseParentGid
-import com.hippo.ehviewer.download.prepareIncrementalUpdate
 import com.hippo.ehviewer.ktbuilder.executeIn
 import com.hippo.ehviewer.ktbuilder.imageRequest
 import com.hippo.ehviewer.ui.GalleryInfoBottomSheet
@@ -280,78 +280,105 @@ fun GalleryDetailContent(
             snackbar(filterAdded)
         }
     }
-    var isPreparingUpdate by remember { mutableStateOf(false) }
-    val updatePreparingText = stringResource(R.string.download_update_preparing)
-    val updateAllReusedFormat = stringResource(R.string.download_update_all_reused)
-    val updateStartedFormat = stringResource(R.string.download_update_started)
+    val updateStartedBgText = stringResource(R.string.download_update_started_bg)
+    val updateRunningText = stringResource(R.string.download_update_running)
     val updateFailedFormat = stringResource(R.string.download_update_failed)
+    val actionIncrementalText = stringResource(R.string.download_update_action_incremental)
+    val actionFullText = stringResource(R.string.download_update_action_full)
+    val actionOpenNewerText = stringResource(R.string.download_update_action_open_newer)
+    val actionDeleteCurrentText = stringResource(R.string.download_update_action_delete_current)
+    val defaultLabelName = stringResource(R.string.default_download_label_name)
 
-    suspend fun launchIncrementalDownload(oldInfo: DownloadInfo, targetInfo: BaseGalleryInfo) {
-        val prep = prepareIncrementalUpdate(oldInfo, targetInfo)
-        DownloadManager.registerUpgradeReplacement(targetInfo.gid, oldInfo.gid)
-        withUIContext {
-            DownloadService.startDownload(targetInfo, oldInfo.label)
+    suspend fun selectTargetDownloadLabel(defaultLabel: String?): String? {
+        val labels = DownloadManager.labelList.map { it.label }
+        if (labels.isEmpty()) return defaultLabel
+        val items = buildList {
+            add(defaultLabelName)
+            addAll(labels)
         }
-        val msg = if (prep.remainingCount == 0) {
-            String.format(updateAllReusedFormat, prep.reusedCount)
+        val selectedIndex = if (defaultLabel == null) {
+            0
         } else {
-            String.format(updateStartedFormat, prep.reusedCount, prep.remainingCount)
+            val idx = labels.indexOf(defaultLabel)
+            if (idx >= 0) idx + 1 else 0
         }
-        snackbar(msg)
+        val chosen = awaitSelectItem(items, title = R.string.download, selected = selectedIndex)
+        return if (chosen == 0) null else items[chosen]
     }
 
     fun onDownloadButtonClick() {
         val detail = galleryDetail ?: return
-        if (isPreparingUpdate) return
 
-        // 入口 A：已下载旧版本且站点检测到新版本，点击「更新下载」只下新增或修改页，完成后自动替换旧版
+        // 入口 A：已下载旧版本且站点检测到新版本，先弹窗供用户选择更新方式或下载分组
         if (hasDownloadableUpdate && latestNewer != null) {
             val oldInfo = DownloadManager.getDownloadInfo(detail.gid)
             if (oldInfo != null) {
-                isPreparingUpdate = true
                 launchUI {
-                    try {
-                        if (isAtLeastT) requestPermission(Manifest.permission.POST_NOTIFICATIONS)
-                        snackbar(updatePreparingText)
-                        runSuspendCatching {
-                            withIOContext {
-                                val newDetail = EhEngine.getGalleryDetail(
-                                    EhUrl.getGalleryDetailUrl(latestNewer.gid, latestNewer.token),
-                                )
-                                launchIncrementalDownload(oldInfo, newDetail.galleryInfo)
-                            }
-                        }.onFailure { error ->
-                            logcat(error)
-                            snackbar(String.format(updateFailedFormat, error.displayString()))
+                    awaitSelectAction(title = R.string.download_update) {
+                        onSelect(actionIncrementalText) {
+                            if (isAtLeastT) requestPermission(Manifest.permission.POST_NOTIFICATIONS)
+                            val targetLabel = selectTargetDownloadLabel(oldInfo.label)
+                            val launched = GalleryUpdateTracker.launchIncrementalUpdate(
+                                oldInfo = oldInfo,
+                                targetGid = latestNewer.gid,
+                                targetToken = latestNewer.token,
+                                titleHint = latestNewer.title.orEmpty(),
+                                targetLabel = targetLabel,
+                                replaceOld = true,
+                            )
+                            snackbar(if (launched) updateStartedBgText else updateRunningText)
                         }
-                    } finally {
-                        isPreparingUpdate = false
-                    }
+                        onSelect(actionFullText) {
+                            if (isAtLeastT) requestPermission(Manifest.permission.POST_NOTIFICATIONS)
+                            runSuspendCatching {
+                                withIOContext {
+                                    EhEngine.getGalleryDetail(
+                                        EhUrl.getGalleryDetailUrl(latestNewer.gid, latestNewer.token),
+                                    )
+                                }
+                            }.onSuccess { newDetail ->
+                                startDownload(false, newDetail.galleryInfo)
+                            }.onFailure { error ->
+                                logcat(error)
+                                snackbar(String.format(updateFailedFormat, error.displayString()))
+                            }
+                        }
+                        onSelect(actionOpenNewerText) {
+                            navigate(latestNewer.gid asDstWith latestNewer.token)
+                        }
+                        onSelect(actionDeleteCurrentText) {
+                            confirmRemoveDownload(detail)
+                        }
+                    }()
                 }
                 return
             }
         }
 
-        // 入口 B：当前为未下载的新版本画廊，若本地已有旧父版本下载则自动增量复用，完成后替换旧版
+        // 入口 B：当前为未下载的新版本画廊，若本地已有旧父版本则弹窗供用户选择增量或完整下载
         if (DownloadManager.getDownloadState(detail.gid) == DownloadInfo.STATE_INVALID) {
             val parentInfo = parseParentGid(detail.parent)?.let(DownloadManager::getDownloadInfo)
             if (parentInfo != null) {
-                isPreparingUpdate = true
                 launchUI {
-                    try {
-                        if (isAtLeastT) requestPermission(Manifest.permission.POST_NOTIFICATIONS)
-                        snackbar(updatePreparingText)
-                        val incrementalOk = runSuspendCatching {
-                            withIOContext {
-                                launchIncrementalDownload(parentInfo, detail.galleryInfo)
-                            }
-                        }.onFailure { logcat(it) }.isSuccess
-                        if (!incrementalOk) {
+                    awaitSelectAction(title = R.string.download_update) {
+                        onSelect(actionIncrementalText) {
+                            if (isAtLeastT) requestPermission(Manifest.permission.POST_NOTIFICATIONS)
+                            val targetLabel = selectTargetDownloadLabel(parentInfo.label)
+                            val launched = GalleryUpdateTracker.launchIncrementalUpdate(
+                                oldInfo = parentInfo,
+                                targetGid = detail.gid,
+                                targetToken = detail.token,
+                                titleHint = EhUtils.getSuitableTitle(detail),
+                                targetLabel = targetLabel,
+                                preloadedTargetInfo = detail.galleryInfo,
+                                replaceOld = true,
+                            )
+                            snackbar(if (launched) updateStartedBgText else updateRunningText)
+                        }
+                        onSelect(actionFullText) {
                             startDownload(false, detail.galleryInfo)
                         }
-                    } finally {
-                        isPreparingUpdate = false
-                    }
+                    }()
                 }
             } else {
                 launchUI { startDownload(false, detail.galleryInfo) }

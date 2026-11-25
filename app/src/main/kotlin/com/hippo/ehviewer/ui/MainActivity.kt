@@ -143,6 +143,7 @@ import com.hippo.ehviewer.client.parser.GalleryDetailUrlParser
 import com.hippo.ehviewer.client.parser.GalleryPageUrlParser
 import com.hippo.ehviewer.collectAsState
 import com.hippo.ehviewer.download.DownloadService
+import com.hippo.ehviewer.download.GalleryUpdateTracker
 import com.hippo.ehviewer.download.LocalGalleryScanner
 import com.hippo.ehviewer.download.downloadLocation
 import com.hippo.ehviewer.download.ensureValidDownloadLocation
@@ -403,6 +404,7 @@ class MainActivity : AppCompatActivity() {
             val needSignIn by Settings.needSignIn.collectAsState()
             val launchPage by Settings.launchPage.collectAsState()
             val scanProgress by LocalGalleryScanner.scanProgress.collectAsState()
+            val updateProgress by GalleryUpdateTracker.progress.collectAsState()
             LaunchedEffect(scanProgress.completedEventId) {
                 val res = scanProgress.lastResult
                 if (scanProgress.completedEventId > 0 && res != null && (scanProgress.lastRunUserInitiated || res.imported > 0 || res.metadataUpdated > 0)) {
@@ -415,6 +417,18 @@ class MainActivity : AppCompatActivity() {
                         ),
                     )
                 }
+            }
+            LaunchedEffect(updateProgress.finishedEventId) {
+                if (updateProgress.finishedEventId <= 0) return@LaunchedEffect
+                val error = updateProgress.errorMessage
+                val msg = if (error != null) {
+                    getString(R.string.download_update_failed, error)
+                } else if (updateProgress.remainingCount == 0) {
+                    getString(R.string.download_update_all_reused, updateProgress.reusedCount)
+                } else {
+                    getString(R.string.download_update_started, updateProgress.reusedCount, updateProgress.remainingCount)
+                }
+                snackbarState.showSnackbar(msg)
             }
             CompositionLocalProvider(
                 LocalNavDrawerState provides navDrawerState,
