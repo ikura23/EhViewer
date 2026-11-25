@@ -12,6 +12,7 @@ data class BitmapImageWithExtraInfo(
     val image: BitmapImage,
     val rect: IntRect = IntRect(0, 0, image.width, image.height),
     val hasQrCode: Boolean = false,
+    val backgroundColor: Int? = null,
 ) : Image by image
 
 object MapExtraInfoInterceptor : Interceptor {

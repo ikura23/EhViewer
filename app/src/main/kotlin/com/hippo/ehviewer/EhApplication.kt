@@ -59,6 +59,7 @@ import com.hippo.ehviewer.coil.HardwareBitmapInterceptor
 import com.hippo.ehviewer.coil.MapExtraInfoInterceptor
 import com.hippo.ehviewer.coil.MergeInterceptor
 import com.hippo.ehviewer.coil.QrCodeInterceptor
+import com.hippo.ehviewer.coil.SmartBackgroundInterceptor
 import com.hippo.ehviewer.dailycheck.checkDawn
 import com.hippo.ehviewer.download.DownloadManager
 import com.hippo.ehviewer.download.DownloadsFilterMode
@@ -195,6 +196,7 @@ class EhApplication : Application(), SingletonImageLoader.Factory {
                 allowRgb565(true)
             }
             add(CropBorderInterceptor)
+            add(SmartBackgroundInterceptor)
             add(DetectBorderInterceptor)
             add(QrCodeInterceptor)
             add(MapExtraInfoInterceptor)

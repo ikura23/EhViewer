@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.map
 const val PAGE_EDGE_ALIGN_TOP = 0
 const val PAGE_EDGE_ALIGN_BOTTOM = 1
 const val PAGE_EDGE_ALIGN_CENTER = 2
+const val READER_THEME_SMART = 4
 
 @Stable
 @Composable

@@ -106,6 +106,10 @@ class Image private constructor(image: CoilImage, private val src: ImageSource) 
         is BitmapImageWithExtraInfo -> image.hasQrCode
         else -> false
     }
+    val backgroundColor = when (image) {
+        is BitmapImageWithExtraInfo -> image.backgroundColor
+        else -> null
+    }
 
     var innerImage: CoilImage? = when (image) {
         is BitmapImageWithExtraInfo -> image.image

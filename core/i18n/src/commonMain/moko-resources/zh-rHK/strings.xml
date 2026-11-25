@@ -513,6 +513,7 @@
     <string name="nav_zone_right">右邊</string>
     <string name="rotation_landscape">橫向</string>
     <string name="automatic_background">自動</string>
+    <string name="smart_background">智慧取色</string>
     <string name="pref_grayscale">灰階</string>
     <string name="pref_inverted_colors">反轉</string>
     <string name="label_default">預設</string>

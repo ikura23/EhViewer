@@ -1,5 +1,6 @@
 package com.hippo.ehviewer.ui.reader
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -22,6 +23,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.toRect
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.FixedScale
@@ -30,8 +32,11 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.toSize
 import arrow.core.partially1
+import com.ehviewer.core.ui.util.thenIf
 import com.hippo.ehviewer.PAGE_EDGE_ALIGN_BOTTOM
+import com.hippo.ehviewer.READER_THEME_SMART
 import com.hippo.ehviewer.Settings
+import com.hippo.ehviewer.coil.applyReaderColorFilters
 import com.hippo.ehviewer.collectAsState
 import com.hippo.ehviewer.gallery.Page
 import com.hippo.ehviewer.gallery.PageLoader
@@ -73,6 +78,10 @@ fun PagerViewer(
     val alignNext by Settings.pageEdgeAlignmentNext.collectAsState()
     val alignPrev by Settings.pageEdgeAlignmentPrev.collectAsState()
     val alignCenter by Settings.pageEdgeAlignmentCenter.collectAsState()
+    val readerTheme by Settings.readerTheme.collectAsState()
+    val grayScale by Settings.grayScale.collectAsState()
+    val invertedColors by Settings.invertedColors.collectAsState()
+    val smartBackgroundEnabled = readerTheme == READER_THEME_SMART
     val landscapeZoom by Settings.landscapeZoom.collectAsState()
     val zoomStart by Settings.zoomStart.collectAsState()
     val alignment = Alignment.fromPreferences(zoomStart, isRtl, isVertical)
@@ -108,6 +117,9 @@ fun PagerViewer(
                 alignNext = alignNext,
                 alignPrev = alignPrev,
                 alignCenter = alignCenter,
+                smartBackgroundEnabled = smartBackgroundEnabled,
+                grayScale = grayScale,
+                invertedColors = invertedColors,
                 scaleType = scaleType,
                 landscapeZoom = landscapeZoom,
                 alignment = alignment,
@@ -138,6 +150,9 @@ fun PagerViewer(
                 alignNext = alignNext,
                 alignPrev = alignPrev,
                 alignCenter = alignCenter,
+                smartBackgroundEnabled = smartBackgroundEnabled,
+                grayScale = grayScale,
+                invertedColors = invertedColors,
                 scaleType = scaleType,
                 landscapeZoom = landscapeZoom,
                 alignment = alignment,
@@ -162,6 +177,9 @@ private fun PageContainer(
     alignNext: Int,
     alignPrev: Int,
     alignCenter: Boolean,
+    smartBackgroundEnabled: Boolean,
+    grayScale: Boolean,
+    invertedColors: Boolean,
     scaleType: Int,
     landscapeZoom: Boolean,
     alignment: Alignment.Horizontal,
@@ -268,7 +286,19 @@ private fun PageContainer(
             }
         }
     }
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+    val pageBackgroundColor = if (smartBackgroundEnabled && status is PageStatus.Ready) {
+        status.image.backgroundColor?.let { raw ->
+            Color(applyReaderColorFilters(raw, grayScale, invertedColors))
+        }
+    } else {
+        null
+    }
+    Box(
+        modifier = Modifier.fillMaxSize().thenIf(pageBackgroundColor != null) {
+            background(pageBackgroundColor!!)
+        },
+        contentAlignment = Alignment.Center,
+    ) {
         PagerItem(
             page = page,
             pageLoader = pageLoader,

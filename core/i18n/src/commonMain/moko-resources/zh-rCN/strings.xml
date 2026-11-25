@@ -625,6 +625,7 @@
     <string name="rotation_type">屏幕方向</string>
     <string name="pref_grayscale">灰度</string>
     <string name="automatic_background">自动</string>
+    <string name="smart_background">智能取色</string>
     <string name="pref_inverted_colors">反色</string>
     <string name="label_default">默认</string>
     <string name="webtoon_side_padding_5">5%</string>

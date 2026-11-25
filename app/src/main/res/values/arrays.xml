@@ -218,6 +218,7 @@
         <item>@string/gray_background</item>
         <item>@string/white_background</item>
         <item>@string/automatic_background</item>
+        <item>@string/smart_background</item>
     </string-array>
 
     <integer-array name="reader_themes_values">
@@ -225,6 +226,7 @@
         <item>2</item>
         <item>0</item>
         <item>3</item>
+        <item>4</item>
     </integer-array>
 
     <string-array name="color_filter_modes" tools:ignore="InconsistentArrays">

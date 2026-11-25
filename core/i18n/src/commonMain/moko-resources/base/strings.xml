@@ -617,6 +617,7 @@
     <string name="gray_background">Gray</string>
     <string name="black_background">Black</string>
     <string name="automatic_background">Auto</string>
+    <string name="smart_background">Smart</string>
     <string name="l_nav">L shaped</string>
     <string name="kindlish_nav">Kindle-ish</string>
     <string name="edge_nav">Edge</string>

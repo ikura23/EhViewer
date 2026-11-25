@@ -3,6 +3,7 @@ package com.hippo.ehviewer.ui.reader
 import android.content.Context
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -48,6 +49,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.keepScreenOn
 import androidx.compose.ui.res.colorResource
@@ -66,7 +68,9 @@ import com.ehviewer.core.util.launch
 import com.ehviewer.core.util.launchIO
 import com.ehviewer.core.util.unreachable
 import com.hippo.ehviewer.EhDB
+import com.hippo.ehviewer.READER_THEME_SMART
 import com.hippo.ehviewer.Settings
+import com.hippo.ehviewer.coil.applyReaderColorFilters
 import com.hippo.ehviewer.collectAsState
 import com.hippo.ehviewer.download.DownloadManager
 import com.hippo.ehviewer.download.archiveFile
@@ -77,6 +81,7 @@ import com.hippo.ehviewer.gallery.Page
 import com.hippo.ehviewer.gallery.PageLoader
 import com.hippo.ehviewer.gallery.PageStatus
 import com.hippo.ehviewer.gallery.status
+import com.hippo.ehviewer.gallery.statusObserved
 import com.hippo.ehviewer.gallery.unblock
 import com.hippo.ehviewer.gallery.useArchivePageLoader
 import com.hippo.ehviewer.gallery.useEhPageLoader
@@ -125,7 +130,7 @@ private fun Background(
     color: Color,
     content: @Composable () -> Unit,
 ) = Box(Modifier.fillMaxSize().background(color), contentAlignment = Alignment.Center) {
-    EhTheme(useDarkTheme = color != Color.White, content = content)
+    EhTheme(useDarkTheme = !color.isLightColor(), content = content)
 }
 
 @Destination<RootGraph>
@@ -135,7 +140,7 @@ fun AnimatedVisibilityScope.ReaderScreen(args: ReaderScreenArgs, navigator: Dest
     val uiController = rememberSystemUiController()
     DisposableEffect(uiController) {
         val lightStatusBar = uiController.statusBarDarkContentEnabled
-        uiController.statusBarDarkContentEnabled = bgColor == Color.White
+        uiController.statusBarDarkContentEnabled = bgColor.isLightColor()
         onDispose {
             uiController.statusBarDarkContentEnabled = lightStatusBar
         }
@@ -378,12 +383,51 @@ fun ReaderScreen(pageLoader: PageLoader, info: BaseGalleryInfo?, isLocalDownload
             focusRequester.requestFocus()
         }
         sync.Sync(isWebtoon) { appbarVisible = false }
-        val bgColor by collectBackgroundColorAsState()
+        val fallbackBgColor by collectBackgroundColorAsState()
+        val readerTheme by Settings.readerTheme.collectAsState()
+        val grayScale by Settings.grayScale.collectAsState()
+        val invertedColors by Settings.invertedColors.collectAsState()
+        val smartEnabled = readerTheme == READER_THEME_SMART
+        val lastSmartColor = remember(pageLoader) { SmartColorHolder() }
+        val currentPageIndex = if (isWebtoon) {
+            (sync.slider.value - 1).coerceIn(0, (pageLoader.size - 1).coerceAtLeast(0))
+        } else {
+            pagerState.currentPage.coerceIn(0, (pageLoader.size - 1).coerceAtLeast(0))
+        }
+        val currentPageStatus = if (smartEnabled && pageLoader.size > 0) {
+            pageLoader.pages.getOrNull(currentPageIndex)?.statusObserved
+        } else {
+            null
+        }
+        val targetBgColor = if (!smartEnabled) {
+            fallbackBgColor
+        } else {
+            when (currentPageStatus) {
+                is PageStatus.Ready -> {
+                    val raw = currentPageStatus.image.backgroundColor
+                    if (raw != null) {
+                        Color(applyReaderColorFilters(raw, grayScale, invertedColors)).also {
+                            lastSmartColor.color = it
+                        }
+                    } else {
+                        fallbackBgColor
+                    }
+                }
+                is PageStatus.Queued, is PageStatus.Loading -> lastSmartColor.color ?: fallbackBgColor
+                is PageStatus.Error, is PageStatus.Blocked, null -> fallbackBgColor
+            }
+        }
+        val bgColor by animateColorAsState(
+            targetValue = targetBgColor,
+            animationSpec = tween(durationMillis = 220),
+            label = "ReaderBackground",
+        )
+        val isLightBg = targetBgColor.isLightColor()
         val isDarkTheme = isSystemInDarkTheme()
-        LaunchedEffect(isDarkTheme) {
+        LaunchedEffect(isDarkTheme, fullscreen, isLightBg) {
             snapshotFlow { appbarVisible }.collect {
                 uiController.isSystemBarsVisible = it || !fullscreen
-                uiController.statusBarDarkContentEnabled = if (it) !isDarkTheme else bgColor == Color.White
+                uiController.statusBarDarkContentEnabled = if (it) !isDarkTheme else isLightBg
             }
         }
         var showNavigationOverlay by remember {
@@ -419,7 +463,7 @@ fun ReaderScreen(pageLoader: PageLoader, info: BaseGalleryInfo?, isLocalDownload
                 }
             }
         }
-        EhTheme(useDarkTheme = bgColor != Color.White) {
+        EhTheme(useDarkTheme = !isLightBg) {
             val insets = if (fullscreen) {
                 if (cutoutShort) {
                     WindowInsets()
@@ -595,6 +639,10 @@ suspend inline fun <T> usePageLoader(args: ReaderScreenArgs, crossinline block: 
     )
 }
 
+private class SmartColorHolder(var color: Color? = null)
+
+private fun Color.isLightColor(): Boolean = luminance() > 0.5f
+
 @Composable
 private fun collectBackgroundColorAsState(): State<Color> {
     val grey = colorResource(com.hippo.ehviewer.R.color.reader_background_dark)
@@ -603,7 +651,7 @@ private fun collectBackgroundColorAsState(): State<Color> {
         when (theme) {
             0 -> Color.White
             2 -> grey
-            3 -> if (dark) grey else Color.White
+            3, READER_THEME_SMART -> if (dark) grey else Color.White
             else -> Color.Black
         }
     }

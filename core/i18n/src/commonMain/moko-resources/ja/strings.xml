@@ -570,6 +570,7 @@
     <string name="gray_background">グレー</string>
     <string name="black_background">ブラック</string>
     <string name="automatic_background">自動</string>
+    <string name="smart_background">スマート</string>
     <string name="l_nav">L 字型</string>
     <string name="kindlish_nav">Kindle-ish</string>
     <string name="edge_nav">エッジ</string>
