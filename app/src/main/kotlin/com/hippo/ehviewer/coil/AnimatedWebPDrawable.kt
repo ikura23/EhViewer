@@ -77,7 +77,7 @@ class AnimatedWebPDrawable(private val source: ByteBuffer) : Drawable(), Animata
     var loopForever = false
     var speed = 1f
         set(value) {
-            val updated = if (value.isFinite()) value.coerceIn(0.1f, 5f) else 1f
+            val updated = if (value.isFinite()) value.coerceIn(0.1f, 10f) else 1f
             val previous = field
             if (updated == previous) return
             val now = SystemClock.uptimeMillis()

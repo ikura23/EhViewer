@@ -10,6 +10,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.NonRestartableComposable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -26,8 +27,12 @@ import coil3.compose.rememberAsyncImagePainter
 import com.ehviewer.core.model.GalleryPreview
 import com.ehviewer.core.model.V2GalleryPreview
 import com.ehviewer.core.ui.component.CrystalCard
+import com.hippo.ehviewer.download.isAnimatedImageFile
 import com.hippo.ehviewer.ktbuilder.imageRequest
 import com.hippo.ehviewer.ui.tools.shouldCrop
+import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 @NonRestartableComposable
@@ -40,7 +45,18 @@ fun EhPreviewCard(
     model: GalleryPreview,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    localPageFile: File? = null,
 ) {
+    val animatedLocalFile by produceState<File?>(null, localPageFile) {
+        value = withContext(Dispatchers.IO) {
+            localPageFile?.takeIf {
+                it.isFile &&
+                    it.length() > 0L &&
+                    it.length() <= MAX_ANIMATED_PREVIEW_BYTES &&
+                    isAnimatedImageFile(it)
+            }
+        }
+    }
     var contentScale by remember(model) { mutableStateOf(ContentScale.Fit) }
     val request = requestOf(model)
     val painter = rememberAsyncImagePainter(
@@ -83,12 +99,32 @@ fun EhPreviewCard(
         },
         modifier = modifier,
     ) {
-        Image(
-            painter = painter,
-            contentDescription = null,
-            modifier = Modifier.fillMaxSize(),
-            contentScale = contentScale,
-        )
+        val localAnim = animatedLocalFile
+        if (localAnim != null) {
+            AnimatedPreviewImage(
+                data = localAnim,
+                cacheKey = "preview:${localAnim.absolutePath}:${localAnim.lastModified()}:${localAnim.length()}",
+                sceneTag = "detail-preview-${model.position}",
+                modifier = Modifier.fillMaxSize(),
+                speed = PREVIEW_ANIMATED_DEFAULT_SPEED,
+                contentScale = ContentScale.Crop,
+                onError = {
+                    Image(
+                        painter = painter,
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = contentScale,
+                    )
+                },
+            )
+        } else {
+            Image(
+                painter = painter,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = contentScale,
+            )
+        }
     }
 }
 
@@ -98,6 +134,7 @@ fun EhPreviewItem(
     galleryPreview: GalleryPreview?,
     position: Int,
     onClick: () -> Unit,
+    localPageFile: File? = null,
 ) = Column(horizontalAlignment = Alignment.CenterHorizontally) {
     Box(contentAlignment = Alignment.Center) {
         if (galleryPreview != null) {
@@ -105,6 +142,7 @@ fun EhPreviewItem(
                 model = galleryPreview,
                 onClick = onClick,
                 modifier = Modifier.aspectRatio(DEFAULT_RATIO),
+                localPageFile = localPageFile,
             )
         } else {
             CrystalCard(

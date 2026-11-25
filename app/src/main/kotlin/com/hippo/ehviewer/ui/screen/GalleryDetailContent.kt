@@ -47,6 +47,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -141,6 +142,7 @@ import com.hippo.ehviewer.ui.main.GalleryDetailErrorTip
 import com.hippo.ehviewer.ui.main.GalleryDetailHeaderCard
 import com.hippo.ehviewer.ui.main.GalleryTags
 import com.hippo.ehviewer.ui.main.TorrentList
+import com.hippo.ehviewer.ui.main.buildLocalPageFileIndex
 import com.hippo.ehviewer.ui.modifyFavorites
 import com.hippo.ehviewer.ui.navToReader
 import com.hippo.ehviewer.ui.openBrowser
@@ -199,6 +201,15 @@ fun GalleryDetailContent(
         stringResource(R.string.read_from, startPage + 1)
     }
     val downloadState by DownloadManager.collectDownloadState(galleryInfo.gid)
+    val localPageFiles by produceState<Map<Int, java.io.File>>(emptyMap(), galleryInfo.gid, downloadState) {
+        value = if (downloadState == DownloadInfo.STATE_INVALID) {
+            emptyMap()
+        } else {
+            withIOContext {
+                DownloadManager.getDownloadInfo(galleryInfo.gid)?.let(::buildLocalPageFileIndex) ?: emptyMap()
+            }
+        }
+    }
     val latestNewer = galleryDetail?.newerVersions?.let(::latestNewerVersion)
     val newerDownloadState = latestNewer?.let { newer ->
         key(newer.gid) { DownloadManager.collectDownloadState(newer.gid).value }
@@ -411,7 +422,7 @@ fun GalleryDetailContent(
                 }
             }
             if (galleryDetail != null && previews != null) {
-                galleryPreview(galleryDetail, previews) { navToReader(galleryDetail.galleryInfo, it) }
+                galleryPreview(galleryDetail, previews, localPageFiles) { navToReader(galleryDetail.galleryInfo, it) }
             }
         }
         else -> FastScrollLazyVerticalGrid(
@@ -480,7 +491,7 @@ fun GalleryDetailContent(
                 }
             }
             if (galleryDetail != null && previews != null) {
-                galleryPreview(galleryDetail, previews) { navToReader(galleryDetail.galleryInfo, it) }
+                galleryPreview(galleryDetail, previews, localPageFiles) { navToReader(galleryDetail.galleryInfo, it) }
             }
         }
     }
@@ -925,7 +936,12 @@ private fun GalleryDetail.collectPreviewItems() = rememberInVM(previewList) {
 }.collectAsLazyPagingItems()
 
 context(_: Context)
-private fun LazyGridScope.galleryPreview(detail: GalleryDetail, data: LazyPagingItems<GalleryPreview>, onClick: (Int) -> Unit) {
+private fun LazyGridScope.galleryPreview(
+    detail: GalleryDetail,
+    data: LazyPagingItems<GalleryPreview>,
+    localPageFiles: Map<Int, java.io.File> = emptyMap(),
+    onClick: (Int) -> Unit,
+) {
     val isV2Thumb = detail.previewList.first() is V2GalleryPreview
     items(
         count = data.itemCount,
@@ -933,7 +949,7 @@ private fun LazyGridScope.galleryPreview(detail: GalleryDetail, data: LazyPaging
         contentType = { "preview" },
     ) { index ->
         val item = data[index]
-        EhPreviewItem(item, index) { onClick(index) }
+        EhPreviewItem(item, index, onClick = { onClick(index) }, localPageFile = localPageFiles[index])
         PrefetchAround(data, index, if (isV2Thumb) 20 else 6) { imageRequest(it) }
     }
 }

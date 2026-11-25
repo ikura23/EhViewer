@@ -2,11 +2,8 @@ package com.hippo.ehviewer.ui.main
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.drawable.Animatable
-import android.graphics.drawable.Drawable
 import android.os.Environment
 import androidx.compose.animation.SharedTransitionScope
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -35,7 +32,6 @@ import androidx.compose.material3.ShapeDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.movableContentOf
@@ -49,15 +45,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import coil3.DrawableImage
-import coil3.compose.AsyncImagePainter
-import coil3.compose.rememberAsyncImagePainter
-import coil3.request.ImageRequest
-import coil3.request.crossfade
 import com.ehviewer.core.database.model.DownloadInfo
 import com.ehviewer.core.files.isFile
 import com.ehviewer.core.files.list
@@ -105,9 +95,6 @@ fun DownloadCard(
     Row {
         val thumb = remember {
             movableContentOf<DownloadInfo, Any> { item, refreshKey ->
-                val hasAnimatedTag = item.simpleTags?.any {
-                    it.substringAfter(':').equals("animated", ignoreCase = true)
-                } == true
                 val preferLocal = item.isLocal ||
                     item.thumbKey.isNullOrBlank() ||
                     '/' !in item.thumbKey!! ||
@@ -116,7 +103,9 @@ fun DownloadCard(
                     LocalDownloadThumb(
                         info = item,
                         thumbnailRefreshKey = refreshKey,
-                        animatedOnly = !item.isLocal && !item.thumbKey.isNullOrBlank() && '/' in item.thumbKey!! && !hasAnimatedTag,
+                        animatedOnly = !item.isLocal && !item.thumbKey.isNullOrBlank() && '/' in item.thumbKey!!,
+                        sceneTag = "download-list",
+                        speed = PREVIEW_ANIMATED_DEFAULT_SPEED,
                         modifier = Modifier.aspectRatio(DEFAULT_RATIO).fillMaxSize(),
                         fallbackContent = {
                             if (!item.thumbKey.isNullOrBlank() && '/' in item.thumbKey!!) {
@@ -278,6 +267,9 @@ fun LocalDownloadThumb(
     info: DownloadInfo,
     thumbnailRefreshKey: Any = Unit,
     animatedOnly: Boolean = false,
+    sceneTag: String = "download-list",
+    speed: Float = PREVIEW_ANIMATED_DEFAULT_SPEED,
+    contentScale: ContentScale = ContentScale.Crop,
     modifier: Modifier = Modifier,
     fallbackContent: (@Composable () -> Unit)? = null,
 ) {
@@ -288,42 +280,14 @@ fun LocalDownloadThumb(
     }
     val resolved = thumbState
     if (resolved != null) {
-        val context = LocalContext.current
-        val request = remember(resolved, context) {
-            ImageRequest.Builder(context)
-                .data(resolved.data)
-                .memoryCacheKey(resolved.cacheKey)
-                .diskCacheKey(resolved.cacheKey)
-                .crossfade(false)
-                .build()
-        }
-        val painter = rememberAsyncImagePainter(model = request)
-        val painterState by painter.state.collectAsState()
-        if (painterState is AsyncImagePainter.State.Error && fallbackContent != null) {
-            fallbackContent()
-            return
-        }
-        val drawable = ((painterState as? AsyncImagePainter.State.Success)?.result?.image as? DrawableImage)?.drawable
-        // 列表项复用到可见窗口时显式设置可见并开启动图播放，离屏回收时及时停止动画释放资源
-        DisposableEffect(drawable) {
-            val animatable = drawable as? Animatable
-            if (animatable != null) {
-                drawable.setVisible(true, false)
-                animatable.start()
-            }
-            onDispose {
-                val anim = drawable as? Animatable
-                if (anim != null) {
-                    anim.stop()
-                    drawable.setVisible(false, false)
-                }
-            }
-        }
-        Image(
-            painter = painter,
-            contentDescription = null,
+        AnimatedPreviewImage(
+            data = resolved.data,
+            cacheKey = resolved.cacheKey,
+            sceneTag = sceneTag,
             modifier = modifier,
-            contentScale = ContentScale.Crop,
+            speed = speed,
+            contentScale = contentScale,
+            onError = fallbackContent,
         )
     } else if (fallbackContent != null) {
         fallbackContent()
@@ -337,7 +301,7 @@ private data class LocalThumbResult(
     val cacheKey: String,
 )
 
-private const val MAX_ANIMATED_THUMB_BYTES = 16L * 1024 * 1024
+private const val MAX_ANIMATED_THUMB_BYTES = MAX_ANIMATED_PREVIEW_BYTES
 
 private fun resolveLocalThumb(info: DownloadInfo, animatedOnly: Boolean): LocalThumbResult? = runCatching {
     var dir = info.downloadDir ?: return@runCatching null
@@ -406,12 +370,9 @@ private fun resolveLocalThumb(info: DownloadInfo, animatedOnly: Boolean): LocalT
     } else if (physicalFile.isDirectory) {
         // 先快速探测首张实际图片是否为真动图：若是，直接播放原动图并跳过静态 .jpg 缓存
         val firstFile = if (animatedOnly) {
-            listOf("00000001.gif", "00000001.webp", "001.gif", "001.webp")
-                .asSequence()
-                .map { File(physicalFile, it) }
-                .firstOrNull { it.isFile }
+            findFirstAnimatedImageInDir(physicalFile)
         } else {
-            LocalFolderPageLoader.imageFiles(dir).firstOrNull()?.let { File(it.toString()) }?.takeIf { it.isFile }
+            findFirstImageFileInDir(physicalFile)
         }
         val cachedJpg = File(AppConfig.localThumbDir.toString(), "${info.gid}.jpg")
         if (firstFile != null && firstFile.isFile && firstFile.length() <= MAX_ANIMATED_THUMB_BYTES && isAnimatedImageFile(firstFile)) {

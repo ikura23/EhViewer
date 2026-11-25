@@ -272,6 +272,18 @@ class SpiderDen(val info: GalleryInfo) {
             ?: findImageFile(index)?.name.let { FileUtils.getExtensionFromFilename(it) }
     }
 
+    /**
+     * 获取当前下载目录中已落盘的 8 位数字命名图片的最大 1-based 页号（排除 `.tmp` 临时文件）。
+     */
+    fun maxDownloadedPageNumber(): Int = runCatching {
+        lock.read {
+            fileCache.keys.maxOfOrNull { name ->
+                val match = PageNumberFileRegex.matchEntire(name) ?: return@maxOfOrNull 0
+                match.groupValues[1].toIntOrNull() ?: 0
+            } ?: 0
+        }
+    }.getOrDefault(0)
+
     fun getImageSource(index: Int): PathSource {
         if (mode == SpiderQueen.MODE_READ) {
             val key = getImageKey(gid, index)
@@ -379,6 +391,7 @@ private val sCache by lazy {
 }
 private const val TEMP_SUFFIX = ".tmp"
 private val FileNameRegex = Regex("^\\d{8}\\.\\w{3,4}")
+private val PageNumberFileRegex = Regex("^(\\d{8})\\.(?!tmp$)\\w{1,8}$", RegexOption.IGNORE_CASE)
 private val FileHashRegex = Regex("/h/([0-9a-f]{40})")
 
 fun perFilename(index: Int, extension: String = ""): String = "%08d.%s".format(index + 1, extension)

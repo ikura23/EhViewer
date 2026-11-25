@@ -29,7 +29,7 @@ class SpeedGifDrawable(private val movie: Movie) : Drawable(), Animatable {
 
     var speed = 1f
         set(value) {
-            val updated = if (value.isFinite()) value.coerceIn(0.1f, 5f) else 1f
+            val updated = if (value.isFinite()) value.coerceIn(0.1f, 10f) else 1f
             if (updated == field) return
             val now = SystemClock.uptimeMillis()
             val elapsed = (now - startTime).coerceAtLeast(0)

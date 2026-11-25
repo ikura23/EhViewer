@@ -423,6 +423,9 @@
     <string name="pref_animated_playback_preload">動圖預載張數</string>
     <string name="animated_playback_preload_pages">%1$d 張</string>
     <string name="pref_animated_playback_speed">動圖播放倍率</string>
+    <string name="animated_playback_speed_custom">自訂倍率</string>
+    <string name="animated_playback_speed_custom_hint">輸入數字，例如 1.8</string>
+    <string name="animated_playback_speed_invalid">請輸入 0.1 到 10 之間的數字</string>
     <string name="animated_loading_title">正在載入動圖</string>
     <string name="local_download_label">本地</string>
     <string name="download_scan_local">掃描本地下載畫廊</string>

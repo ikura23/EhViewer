@@ -551,6 +551,9 @@
     <string name="pref_animated_playback_preload">Animated image preload count</string>
     <string name="animated_playback_preload_pages">%1$d pages</string>
     <string name="pref_animated_playback_speed">Playback speed</string>
+    <string name="animated_playback_speed_custom">Custom speed</string>
+    <string name="animated_playback_speed_custom_hint">Enter number, e.g. 1.8</string>
+    <string name="animated_playback_speed_invalid">Please enter a number between 0.1 and 10</string>
     <string name="animated_loading_title">Loading animated images</string>
     <string name="local_download_label">Local</string>
     <string name="download_scan_local">Scan local downloaded galleries</string>

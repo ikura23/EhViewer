@@ -221,15 +221,29 @@ class SpiderQueen private constructor(val galleryInfo: GalleryInfo) : CoroutineS
 
     private suspend fun doPrepare() {
         spiderDen.initDownloadDirIfExist()
+        var shouldPersistCorrected = false
         val pages = Either.catch {
-            spiderInfo = readSpiderInfoFromLocal() ?: readSpiderInfoFromInternet()
+            val localInfo = readSpiderInfoFromLocal()
+            if (localInfo != null) {
+                val localMaxPage = spiderDen.maxDownloadedPageNumber()
+                shouldPersistCorrected = reconcileSpiderInfoPages(localInfo, galleryInfo.pages, localMaxPage)
+                spiderInfo = localInfo
+            } else {
+                val internetInfo = readSpiderInfoFromInternet()
+                reconcileSpiderInfoPages(internetInfo, galleryInfo.pages, spiderDen.maxDownloadedPageNumber())
+                spiderInfo = internetInfo
+            }
             spiderInfo.pages
         }.getOrElse {
             logcat(it)
-            galleryInfo.pages
+            maxOf(galleryInfo.pages, spiderDen.maxDownloadedPageNumber())
         }
         check(pages > 0)
         pageStates = IntArray(pages)
+        if (shouldPersistCorrected) {
+            // 仅在 pageStates 初始化（isReady 为 true）之后回写修正后的页数自愈 .ehviewer
+            runCatching { writeSpiderInfoToLocal() }.onFailure { logcat(it) }
+        }
         notifyGetPages(pages)
     }
 

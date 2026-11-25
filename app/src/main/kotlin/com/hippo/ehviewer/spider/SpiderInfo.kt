@@ -23,12 +23,33 @@ class SpiderInfo(
 
     val token: String,
 
-    val pages: Int,
+    var pages: Int,
 
     val pTokenMap: MutableMap<Int, String> = hashMapOf(),
 
     var previewPerPage: Int = -1,
 )
+
+/**
+ * 协调校正 `.ehviewer` 缓存中的总页数。
+ * 当本地 `.ehviewer` 因中途下载或旧版本写入导致页数偏小（如 39 页），
+ * 而画廊元数据、已获取的 `pTokenMap` 下标或本地已有图片页号更大时，自动扩大至最大值。
+ *
+ * @return 若发生页数扩大修正返回 `true`，否则返回 `false`
+ */
+fun reconcileSpiderInfoPages(
+    spiderInfo: SpiderInfo,
+    galleryPages: Int,
+    localMaxPage: Int = 0,
+): Boolean {
+    val pTokenMaxPage = (spiderInfo.pTokenMap.keys.maxOrNull() ?: -1) + 1
+    val resolved = maxOf(spiderInfo.pages, galleryPages, pTokenMaxPage, localMaxPage)
+    if (resolved > spiderInfo.pages) {
+        spiderInfo.pages = resolved
+        return true
+    }
+    return false
+}
 
 private val cbor = Cbor {
     ignoreUnknownKeys = true

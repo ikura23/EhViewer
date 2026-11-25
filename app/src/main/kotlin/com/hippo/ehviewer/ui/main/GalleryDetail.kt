@@ -22,8 +22,10 @@ import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ProvideTextStyle
+import androidx.compose.material3.ShapeDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -32,14 +34,18 @@ import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.ehviewer.core.database.model.DownloadInfo
 import com.ehviewer.core.i18n.R
 import com.ehviewer.core.model.GalleryDetail
 import com.ehviewer.core.model.GalleryInfo
 import com.ehviewer.core.ui.icons.EhIcons
 import com.ehviewer.core.ui.icons.big.SadAndroid
+import com.ehviewer.core.ui.util.SharedElementBox
 import com.ehviewer.core.ui.util.TransitionsVisibilityScope
 import com.ehviewer.core.ui.util.detailThumbGenerator
 import com.hippo.ehviewer.client.EhUtils
+import com.hippo.ehviewer.download.DownloadManager
+import com.hippo.ehviewer.download.isLocal
 
 @Composable
 fun GalleryDetailHeaderInfoCard(
@@ -87,14 +93,37 @@ fun GalleryDetailHeaderCard(
     modifier: Modifier = Modifier,
 ) = ElevatedCard(modifier = modifier) {
     Row {
+        val downloadState by DownloadManager.collectDownloadState(info.gid)
+        val thumbKeyInfo = remember(info.gid, info.thumbKey) { info }
+        val localCandidate = remember(info.gid, downloadState) {
+            if (downloadState != DownloadInfo.STATE_INVALID) DownloadManager.getDownloadInfo(info.gid) else null
+        }
+        val thumbModifier = Modifier.size(
+            dimensionResource(id = com.hippo.ehviewer.R.dimen.gallery_detail_thumb_width),
+            dimensionResource(id = com.hippo.ehviewer.R.dimen.gallery_detail_thumb_height),
+        )
         with(detailThumbGenerator) {
-            EhThumbCard(
-                key = remember(info.gid, info.thumbKey) { info },
-                modifier = Modifier.size(
-                    dimensionResource(id = com.hippo.ehviewer.R.dimen.gallery_detail_thumb_width),
-                    dimensionResource(id = com.hippo.ehviewer.R.dimen.gallery_detail_thumb_height),
-                ),
-            )
+            if (localCandidate != null) {
+                Card(modifier = thumbModifier) {
+                    SharedElementBox(key = "${info.gid}", shape = ShapeDefaults.Medium) {
+                        LocalDownloadThumb(
+                            info = localCandidate,
+                            animatedOnly = !localCandidate.isLocal && !info.thumbKey.isNullOrBlank() && '/' in info.thumbKey!!,
+                            sceneTag = "detail-header",
+                            speed = PREVIEW_ANIMATED_DEFAULT_SPEED,
+                            modifier = Modifier.fillMaxSize(),
+                            fallbackContent = {
+                                EhThumbImage(key = thumbKeyInfo, modifier = Modifier.fillMaxSize())
+                            },
+                        )
+                    }
+                }
+            } else {
+                EhThumbCard(
+                    key = thumbKeyInfo,
+                    modifier = thumbModifier,
+                )
+            }
         }
         Spacer(modifier = Modifier.weight(0.5F))
         Column(

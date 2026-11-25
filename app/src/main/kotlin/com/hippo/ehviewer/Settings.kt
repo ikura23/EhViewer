@@ -221,6 +221,11 @@ object Settings : DataStorePreferences(null) {
             val speed = pref[animatedPlaybackSpeed]
             if (!speed.isFinite()) {
                 pref[animatedPlaybackSpeed] = 1f
+            } else {
+                val clamped = speed.coerceIn(0.1f, 10f)
+                if (clamped != speed) {
+                    pref[animatedPlaybackSpeed] = clamped
+                }
             }
         }
     }

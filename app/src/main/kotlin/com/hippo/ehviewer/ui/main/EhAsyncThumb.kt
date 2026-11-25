@@ -58,30 +58,39 @@ fun EhAsyncCropThumb(
 
 @Composable
 context(_: SharedTransitionScope, _: TransitionsVisibilityScope, _: SETNodeGenerator)
+fun EhThumbImage(
+    key: GalleryInfo,
+    modifier: Modifier = Modifier.fillMaxSize(),
+) {
+    var contentScale by remember(key) { mutableStateOf(ContentScale.Fit) }
+    val request = requestOf(key)
+    val painter = rememberAsyncImagePainter(
+        model = request,
+        onSuccess = {
+            if (it.result.image.shouldCrop) {
+                contentScale = ContentScale.Crop
+            }
+        },
+    )
+    val state by painter.state.collectAsState()
+    Image(
+        painter = painter,
+        contentDescription = null,
+        modifier = modifier.thenIf(state !is AsyncImagePainter.State.Success) {
+            // Keep applying this when state is `Loading` to avoid cutting off the ripple
+            clickable { if (state is AsyncImagePainter.State.Error) painter.restart() }
+        },
+        contentScale = contentScale,
+    )
+}
+
+@Composable
+context(_: SharedTransitionScope, _: TransitionsVisibilityScope, _: SETNodeGenerator)
 fun EhThumbCard(
     key: GalleryInfo,
     modifier: Modifier = Modifier,
 ) = Card(modifier = modifier) {
     SharedElementBox(key = "${key.gid}", shape = ShapeDefaults.Medium) {
-        var contentScale by remember(key) { mutableStateOf(ContentScale.Fit) }
-        val request = requestOf(key)
-        val painter = rememberAsyncImagePainter(
-            model = request,
-            onSuccess = {
-                if (it.result.image.shouldCrop) {
-                    contentScale = ContentScale.Crop
-                }
-            },
-        )
-        val state by painter.state.collectAsState()
-        Image(
-            painter = painter,
-            contentDescription = null,
-            modifier = Modifier.thenIf(state !is AsyncImagePainter.State.Success) {
-                // Keep applying this when state is `Loading` to avoid cutting off the ripple
-                clickable { if (state is AsyncImagePainter.State.Error) painter.restart() }
-            }.fillMaxSize(),
-            contentScale = contentScale,
-        )
+        EhThumbImage(key = key, modifier = Modifier.fillMaxSize())
     }
 }

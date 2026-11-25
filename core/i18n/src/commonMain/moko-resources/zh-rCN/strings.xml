@@ -532,6 +532,9 @@
     <string name="pref_animated_playback_preload">动图预加载张数</string>
     <string name="animated_playback_preload_pages">%1$d 张</string>
     <string name="pref_animated_playback_speed">动图播放倍率</string>
+    <string name="animated_playback_speed_custom">自定义倍率</string>
+    <string name="animated_playback_speed_custom_hint">输入数字，例如 1.8</string>
+    <string name="animated_playback_speed_invalid">请输入 0.1 到 10 之间的数字</string>
     <string name="animated_loading_title">正在加载动图</string>
     <string name="local_download_label">本地</string>
     <string name="download_scan_local">扫描本地下载画廊</string>
