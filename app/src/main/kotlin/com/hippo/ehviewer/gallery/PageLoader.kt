@@ -248,8 +248,8 @@ abstract class PageLoader(
                 else -> false
             }
         }
-        val start = if (prefetchRange.step > 0) prefetchRange.first else prefetchRange.last
-        val end = if (prefetchRange.step > 0) prefetchRange.last else prefetchRange.first
+        val start = minOf(index, if (prefetchRange.step > 0) prefetchRange.first else prefetchRange.last)
+        val end = maxOf(index, if (prefetchRange.step > 0) prefetchRange.last else prefetchRange.first)
         prefetchPages(pagesAbsent, start - 5..end + 5)
     }
 
@@ -289,7 +289,8 @@ abstract class PageLoader(
                     }
                 } catch (e: Throwable) {
                     if (e is CancellationException) {
-                        notifyPageFailed(index, null)
+                        // 解码任务被滑走取消时恢复为等待转圈状态，不显示报错面板
+                        notifyPageWait(index)
                         throw e
                     } else {
                         notifyPageFailed(index, e.displayString())

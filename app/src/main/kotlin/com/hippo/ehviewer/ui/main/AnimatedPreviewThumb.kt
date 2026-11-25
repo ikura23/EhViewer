@@ -225,13 +225,14 @@ private fun isGifHeader(bytes: ByteArray, length: Int): Boolean =
  */
 fun resolvePhysicalDownloadDir(info: DownloadInfo): File? = runCatching {
     val rawPath = info.downloadDir?.toString() ?: return@runCatching null
-    val physicalPath = if (rawPath.startsWith("content:") && LocalGalleryScanner.hasAllFilesAccess()) {
+    val candidatePath: String? = if (rawPath.startsWith("content:") && LocalGalleryScanner.hasAllFilesAccess()) {
         resolveDownloadLocationPath(rawPath, Environment.getExternalStorageDirectory().absolutePath)
     } else if (rawPath.startsWith("/")) {
         rawPath
     } else {
         null
-    } ?: return@runCatching null
+    }
+    val physicalPath = candidatePath ?: return@runCatching null
     File(physicalPath).takeIf { it.isDirectory }
 }.getOrNull()
 

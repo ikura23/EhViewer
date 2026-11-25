@@ -47,6 +47,8 @@ suspend inline fun <T> useEhPageLoader(
 
                 override fun onPageReady(index: Int) = notifySourceReady(index)
 
+                override fun onPageCancelled(index: Int) = notifyPageWait(index)
+
                 override fun onPageFailure(index: Int, error: String?, finished: Int, downloaded: Int, total: Int) = notifyPageFailed(index, error)
             }
             install(

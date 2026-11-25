@@ -155,6 +155,14 @@ class SpiderQueen private constructor(val galleryInfo: GalleryInfo) : CoroutineS
         }
     }
 
+    private fun notifyPageCancelled(index: Int) {
+        synchronized(mSpiderListeners) {
+            mSpiderListeners.forEach {
+                it.onPageCancelled(index)
+            }
+        }
+    }
+
     private var downloadMode = false
 
     private val isReady
@@ -441,6 +449,7 @@ class SpiderQueen private constructor(val galleryInfo: GalleryInfo) : CoroutineS
         fun onPageFailure(index: Int, error: String?, finished: Int, downloaded: Int, total: Int) {}
         fun onFinish(finished: Int, downloaded: Int, total: Int, failed: Boolean) {}
         fun onPageReady(index: Int) {}
+        fun onPageCancelled(index: Int) {}
     }
 
     companion object {
@@ -520,11 +529,11 @@ class SpiderQueen private constructor(val galleryInfo: GalleryInfo) : CoroutineS
                         }
                     }.onFailure {
                         if (it is CancellationException) {
-                            if (mReadReference > 0) {
+                            if (mReadReference > 0 && !isDownloadMode && it.message != FORCE_RETRY) {
                                 logcat(WORKER_DEBUG_TAG) { "Download image $index cancelled" }
-                                if (it.message != FORCE_RETRY) {
-                                    updatePageState(index, STATE_FAILED, "Cancelled")
-                                }
+                                // 翻页或超窗取消不是下载错误，重置为等待状态让页面保持转圈，切回时自动重拉。
+                                updatePageState(index, STATE_NONE)
+                                notifyPageCancelled(index)
                             }
                             throw it
                         }
