@@ -107,6 +107,8 @@ object DownloadManager : CoroutineScope {
 
     // 进程重建后遗留的 WAIT / DOWNLOAD 状态属于上一次生命周期，统一归入恢复状态机接管。
     private val recoveryPrefs = appCtx.getSharedPreferences("download_recovery", android.content.Context.MODE_PRIVATE)
+    // 记录「新版 GID -> 待替换旧版 GID」映射，新版全部下载完成后自动替换删除旧版。
+    private val upgradePrefs = appCtx.getSharedPreferences("download_upgrade_map", android.content.Context.MODE_PRIVATE)
     private val recovery = DownloadRecovery(
         allInfoList.filter {
             it.state == DownloadInfo.STATE_WAIT || it.state == DownloadInfo.STATE_DOWNLOAD
@@ -636,36 +638,18 @@ object DownloadManager : CoroutineScope {
     }
 
     suspend fun deleteDownload(gid: Long, deleteFiles: Boolean = false) = command {
+        removeUpgradeMappingsFor(gid)
         stopDownloadInternal(gid)
         val info = mAllInfoMap[gid]
         if (info != null) {
-            // Remove from DB
-            persist { EhDB.removeDownloadInfo(info) }
-
-            // Remove all list and map
-            mutateAllInfoList {
-                it.remove(info)
-            }
-            mAllInfoMap.remove(info.gid)
-
-            // Update listener
-            mutableNotifyFlow.emit(info)
-
+            removeDownloadEntryOwned(info, deleteFiles = deleteFiles)
             // Ensure download
             ensureDownload()
-
-            if (info.isLocal) {
-                // 本地导入条目只清理数据库目录映射，绝不删原磁盘文件，避免重新在线下载时误写入原位置。
-                persist { EhDB.removeDownloadDirname(info.gid) }
-            } else if (deleteFiles) {
-                info.downloadDir?.delete()
-                info.tempDownloadDir?.delete()
-                persist { EhDB.removeDownloadDirname(info.gid) }
-            }
         }
     }
 
     suspend fun deleteRangeDownload(gidList: LongArray) = command {
+        gidList.forEach(::removeUpgradeMappingsFor)
         stopRangeDownloadInternal(gidList)
         val list = gidList.mapNotNull { gid ->
             mAllInfoMap.remove(gid)
@@ -684,6 +668,59 @@ object DownloadManager : CoroutineScope {
 
         // Ensure download
         ensureDownload()
+    }
+
+    /**
+     * 登记画廊增量升级替换关系：待 [newGid] 下载全部完成后自动迁移阅读进度并移除 [oldGid]。
+     */
+    suspend fun registerUpgradeReplacement(newGid: Long, oldGid: Long) = command {
+        if (newGid == oldGid) return@command
+        upgradePrefs.edit().putLong(newGid.toString(), oldGid).apply()
+    }
+
+    private fun removeUpgradeMappingsFor(gid: Long) {
+        val editor = upgradePrefs.edit()
+        var changed = false
+        val gidKey = gid.toString()
+        if (upgradePrefs.contains(gidKey)) {
+            editor.remove(gidKey)
+            changed = true
+        }
+        for ((k, v) in upgradePrefs.all) {
+            if (v is Long && v == gid) {
+                editor.remove(k)
+                changed = true
+            }
+        }
+        if (changed) editor.apply()
+    }
+
+    private suspend fun removeDownloadEntryOwned(
+        info: DownloadInfo,
+        deleteFiles: Boolean,
+        preserveDir: Path? = null,
+    ) {
+        persist { EhDB.removeDownloadInfo(info) }
+        mutateAllInfoList {
+            it.remove(info)
+        }
+        mAllInfoMap.remove(info.gid)
+        mutableNotifyFlow.emit(info)
+
+        if (info.isLocal) {
+            // 本地导入条目只清理数据库目录映射，绝不删原磁盘文件，避免重新在线下载时误写入原位置。
+            persist { EhDB.removeDownloadDirname(info.gid) }
+        } else if (deleteFiles) {
+            val oldDir = info.downloadDir
+            if (oldDir != null && oldDir != preserveDir) {
+                oldDir.delete()
+            }
+            val oldTempDir = info.tempDownloadDir
+            if (oldTempDir != null && oldTempDir != preserveDir) {
+                oldTempDir.delete()
+            }
+            persist { EhDB.removeDownloadDirname(info.gid) }
+        }
     }
 
     suspend fun sortDownloads(mode: SortMode) = mutateAllInfoList {
@@ -995,7 +1032,32 @@ object DownloadManager : CoroutineScope {
             saveStates(listOf(info))
             mDownloadListener?.onFinish(info)
             mutableNotifyFlow.emit(info)
+            if (!failed) {
+                replaceOldVersionIfRegisteredOwned(info)
+            }
         } ?: logcat(TAG, LogPriority.ERROR) { "Current task is null, but it should not be" }
+    }
+
+    private suspend fun replaceOldVersionIfRegisteredOwned(newInfo: DownloadInfo) {
+        val oldGid = upgradePrefs.getLong(newInfo.gid.toString(), -1L)
+        if (oldGid <= 0L || oldGid == newInfo.gid) return
+        upgradePrefs.edit().remove(newInfo.gid.toString()).apply()
+
+        persist {
+            val oldProgress = EhDB.getReadProgress(oldGid)
+            if (oldProgress > 0 && EhDB.getReadProgress(newInfo.gid) <= 0) {
+                EhDB.putReadProgress(newInfo.gid, oldProgress)
+            }
+        }
+
+        stopDownloadInternal(oldGid)
+        val oldInfo = mAllInfoMap[oldGid] ?: return
+        val preserveDir = newInfo.downloadDir
+        removeDownloadEntryOwned(
+            info = oldInfo,
+            deleteFiles = !oldInfo.isLocal,
+            preserveDir = preserveDir,
+        )
     }
 
     private fun GalleryEntity.toEntitySnapshot() = GalleryEntity(

@@ -669,5 +669,10 @@
     <string name="cookie_igneous_optional">igneous (optional)</string>
     <string name="error_cookie_cannot_empty">Cookie cannot be empty</string>
     <string name="error_cookie_invalid_format">Invalid cookie format (contains spaces or illegal characters)</string>
+    <string name="download_update">Update</string>
+    <string name="download_update_preparing">Checking updated pages…</string>
+    <string name="download_update_started">Reused %1$d pages, downloading %2$d updated pages</string>
+    <string name="download_update_all_reused">Reused all %1$d pages, finishing upgrade…</string>
+    <string name="download_update_failed">Failed to prepare update: %1$s</string>
     <!-- Tachiyomi Reader End-->
 </resources>

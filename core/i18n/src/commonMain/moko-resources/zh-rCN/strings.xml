@@ -651,5 +651,10 @@
     <string name="cookie_igneous_optional">igneous（选填）</string>
     <string name="error_cookie_cannot_empty">此 Cookie 不能为空</string>
     <string name="error_cookie_invalid_format">Cookie 格式无效（请勿包含空格、分号或换行）</string>
+    <string name="download_update">更新下载</string>
+    <string name="download_update_preparing">正在比对更新页面…</string>
+    <string name="download_update_started">已复用 %1$d 页，正在下载更新的 %2$d 页</string>
+    <string name="download_update_all_reused">已复用全部 %1$d 页，正在完成替换升级…</string>
+    <string name="download_update_failed">获取更新信息失败：%1$s</string>
     <!-- Tachiyomi Reader End-->
 </resources>

@@ -1,5 +1,6 @@
 package com.hippo.ehviewer.ui.screen
 
+import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
@@ -33,6 +34,9 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularWavyProgressIndicator
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -74,6 +78,7 @@ import com.ehviewer.core.database.model.DownloadInfo
 import com.ehviewer.core.database.model.Filter
 import com.ehviewer.core.database.model.FilterMode
 import com.ehviewer.core.i18n.R
+import com.ehviewer.core.model.BaseGalleryInfo
 import com.ehviewer.core.model.GalleryComment
 import com.ehviewer.core.model.GalleryDetail
 import com.ehviewer.core.model.GalleryInfo
@@ -97,6 +102,7 @@ import com.ehviewer.core.ui.util.flattenForEach
 import com.ehviewer.core.ui.util.isExpanded
 import com.ehviewer.core.ui.util.rememberInVM
 import com.ehviewer.core.util.async
+import com.ehviewer.core.util.isAtLeastT
 import com.ehviewer.core.util.launch
 import com.ehviewer.core.util.launchIO
 import com.ehviewer.core.util.launchUI
@@ -116,6 +122,10 @@ import com.hippo.ehviewer.coil.PrefetchAround
 import com.hippo.ehviewer.coil.justDownload
 import com.hippo.ehviewer.collectAsState
 import com.hippo.ehviewer.download.DownloadManager
+import com.hippo.ehviewer.download.DownloadService
+import com.hippo.ehviewer.download.latestNewerVersion
+import com.hippo.ehviewer.download.parseParentGid
+import com.hippo.ehviewer.download.prepareIncrementalUpdate
 import com.hippo.ehviewer.ktbuilder.executeIn
 import com.hippo.ehviewer.ktbuilder.imageRequest
 import com.hippo.ehviewer.ui.GalleryInfoBottomSheet
@@ -150,6 +160,7 @@ import com.hippo.ehviewer.util.FavouriteStatusRouter
 import com.hippo.ehviewer.util.addTextToClipboard
 import com.hippo.ehviewer.util.bgWork
 import com.hippo.ehviewer.util.displayString
+import com.hippo.ehviewer.util.requestPermission
 import com.ramcosta.composedestinations.navigation.DestinationsNavigator
 import io.ktor.http.encodeURLParameter
 import kotlin.coroutines.resume
@@ -188,14 +199,25 @@ fun GalleryDetailContent(
         stringResource(R.string.read_from, startPage + 1)
     }
     val downloadState by DownloadManager.collectDownloadState(galleryInfo.gid)
-    val downloadButtonText = when (downloadState) {
-        DownloadInfo.STATE_INVALID -> stringResource(R.string.download)
-        DownloadInfo.STATE_NONE -> stringResource(R.string.download_state_none)
-        DownloadInfo.STATE_WAIT -> stringResource(R.string.download_state_wait)
-        DownloadInfo.STATE_DOWNLOAD -> stringResource(R.string.download_state_downloading)
-        DownloadInfo.STATE_FINISH -> stringResource(R.string.download_state_downloaded)
-        DownloadInfo.STATE_FAILED -> stringResource(R.string.download_state_failed)
-        else -> error("Invalid DownloadState!!!")
+    val latestNewer = galleryDetail?.newerVersions?.let(::latestNewerVersion)
+    val newerDownloadState = latestNewer?.let { newer ->
+        key(newer.gid) { DownloadManager.collectDownloadState(newer.gid).value }
+    } ?: DownloadInfo.STATE_INVALID
+    val hasDownloadableUpdate = downloadState != DownloadInfo.STATE_INVALID &&
+        latestNewer != null &&
+        newerDownloadState != DownloadInfo.STATE_FINISH
+    val downloadButtonText = if (hasDownloadableUpdate) {
+        stringResource(R.string.download_update)
+    } else {
+        when (downloadState) {
+            DownloadInfo.STATE_INVALID -> stringResource(R.string.download)
+            DownloadInfo.STATE_NONE -> stringResource(R.string.download_state_none)
+            DownloadInfo.STATE_WAIT -> stringResource(R.string.download_state_wait)
+            DownloadInfo.STATE_DOWNLOAD -> stringResource(R.string.download_state_downloading)
+            DownloadInfo.STATE_FINISH -> stringResource(R.string.download_state_downloaded)
+            DownloadInfo.STATE_FAILED -> stringResource(R.string.download_state_failed)
+            else -> error("Invalid DownloadState!!!")
+        }
     }
     fun onReadButtonClick() {
         if (galleryDetail != null || downloadState != DownloadInfo.STATE_INVALID) {
@@ -247,12 +269,84 @@ fun GalleryDetailContent(
             snackbar(filterAdded)
         }
     }
-    fun onDownloadButtonClick() {
-        galleryDetail ?: return
-        if (DownloadManager.getDownloadState(galleryDetail.gid) == DownloadInfo.STATE_INVALID) {
-            launchUI { startDownload(false, galleryDetail.galleryInfo) }
+    var isPreparingUpdate by remember { mutableStateOf(false) }
+    val updatePreparingText = stringResource(R.string.download_update_preparing)
+    val updateAllReusedFormat = stringResource(R.string.download_update_all_reused)
+    val updateStartedFormat = stringResource(R.string.download_update_started)
+    val updateFailedFormat = stringResource(R.string.download_update_failed)
+
+    suspend fun launchIncrementalDownload(oldInfo: DownloadInfo, targetInfo: BaseGalleryInfo) {
+        val prep = prepareIncrementalUpdate(oldInfo, targetInfo)
+        DownloadManager.registerUpgradeReplacement(targetInfo.gid, oldInfo.gid)
+        withUIContext {
+            DownloadService.startDownload(targetInfo, oldInfo.label)
+        }
+        val msg = if (prep.remainingCount == 0) {
+            String.format(updateAllReusedFormat, prep.reusedCount)
         } else {
-            launch { confirmRemoveDownload(galleryDetail) }
+            String.format(updateStartedFormat, prep.reusedCount, prep.remainingCount)
+        }
+        snackbar(msg)
+    }
+
+    fun onDownloadButtonClick() {
+        val detail = galleryDetail ?: return
+        if (isPreparingUpdate) return
+
+        // 入口 A：已下载旧版本且站点检测到新版本，点击「更新下载」只下新增或修改页，完成后自动替换旧版
+        if (hasDownloadableUpdate && latestNewer != null) {
+            val oldInfo = DownloadManager.getDownloadInfo(detail.gid)
+            if (oldInfo != null) {
+                isPreparingUpdate = true
+                launchUI {
+                    try {
+                        if (isAtLeastT) requestPermission(Manifest.permission.POST_NOTIFICATIONS)
+                        snackbar(updatePreparingText)
+                        runSuspendCatching {
+                            withIOContext {
+                                val newDetail = EhEngine.getGalleryDetail(
+                                    EhUrl.getGalleryDetailUrl(latestNewer.gid, latestNewer.token),
+                                )
+                                launchIncrementalDownload(oldInfo, newDetail.galleryInfo)
+                            }
+                        }.onFailure { error ->
+                            logcat(error)
+                            snackbar(String.format(updateFailedFormat, error.displayString()))
+                        }
+                    } finally {
+                        isPreparingUpdate = false
+                    }
+                }
+                return
+            }
+        }
+
+        // 入口 B：当前为未下载的新版本画廊，若本地已有旧父版本下载则自动增量复用，完成后替换旧版
+        if (DownloadManager.getDownloadState(detail.gid) == DownloadInfo.STATE_INVALID) {
+            val parentInfo = parseParentGid(detail.parent)?.let(DownloadManager::getDownloadInfo)
+            if (parentInfo != null) {
+                isPreparingUpdate = true
+                launchUI {
+                    try {
+                        if (isAtLeastT) requestPermission(Manifest.permission.POST_NOTIFICATIONS)
+                        snackbar(updatePreparingText)
+                        val incrementalOk = runSuspendCatching {
+                            withIOContext {
+                                launchIncrementalDownload(parentInfo, detail.galleryInfo)
+                            }
+                        }.onFailure { logcat(it) }.isSuccess
+                        if (!incrementalOk) {
+                            startDownload(false, detail.galleryInfo)
+                        }
+                    } finally {
+                        isPreparingUpdate = false
+                    }
+                }
+            } else {
+                launchUI { startDownload(false, detail.galleryInfo) }
+            }
+        } else {
+            launch { confirmRemoveDownload(detail) }
         }
     }
 
