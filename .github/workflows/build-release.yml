@@ -1,0 +1,128 @@
+name: Build Release APK
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      abi:
+        description: "Target ABI to build"
+        required: true
+        default: "arm64-v8a"
+        type: choice
+        options:
+          - arm64-v8a
+          - all
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      ORG_GRADLE_PROJECT_RELEASE_REPO: ${{ github.repository }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version-file: .java-version
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: nightly-2026-10-07
+          components: rust-src
+          targets: aarch64-linux-android,x86_64-linux-android,thumbv7neon-linux-androideabi
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./app/src/main/rust"
+          shared-key: ${{ runner.os }}
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Prepare Signing Material
+        env:
+          KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$STORE_PASSWORD" ] && [ -n "$KEY_ALIAS" ] && [ -n "$KEY_PASSWORD" ]; then
+            mkdir -p .private-signing
+            printf '%s' "$KEYSTORE_BASE64" | base64 --decode > .private-signing/release.jks
+            cat > .private-signing/signing.properties <<EOF
+          storeFile=release.jks
+          storePassword=$STORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
+            echo "Configured private release signing."
+          else
+            echo "No release signing secrets configured; falling back to repository keystore."
+          fi
+
+      - name: Run Unit Tests
+        run: ./gradlew :app:testDefaultDebugUnitTest --no-daemon --console=plain
+
+      - name: Build Release APK
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.abi }}" = "arm64-v8a" ]; then
+            ./gradlew :app:assembleDefaultRelease -PreleaseAbi=arm64-v8a --no-daemon --console=plain
+          else
+            ./gradlew :app:assembleDefaultRelease --no-daemon --console=plain
+          fi
+
+      - name: Prepare Release Assets
+        run: |
+          VERSION="${GITHUB_REF_NAME:-${GITHUB_SHA::7}}"
+          mkdir -p release-assets
+          shopt -s nullglob
+          for apk in app/build/outputs/apk/default/release/*.apk; do
+            base="$(basename "$apk")"
+            case "$base" in
+              *arm64-v8a*)
+                cp "$apk" "release-assets/EhViewer-${VERSION}-default-arm64-v8a.apk"
+                ;;
+              *x86_64*)
+                cp "$apk" "release-assets/EhViewer-${VERSION}-default-x86_64.apk"
+                ;;
+              *armeabi-v7a*)
+                cp "$apk" "release-assets/EhViewer-${VERSION}-default-armeabi-v7a.apk"
+                ;;
+              *universal*)
+                cp "$apk" "release-assets/EhViewer-${VERSION}-default-universal.apk"
+                ;;
+            esac
+          done
+          (cd release-assets && sha256sum *.apk > SHA256SUMS.txt)
+          ls -lh release-assets
+
+      - name: Cleanup Signing Material
+        if: always()
+        run: rm -rf .private-signing
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ehviewer-release-apk
+          path: release-assets/*
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true
