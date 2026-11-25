@@ -63,8 +63,16 @@ fun WebtoonViewer(
                         val (x, y) = offset
                         when (navigator().getAction(Offset(x / w, y / h))) {
                             NavigationRegion.MENU -> onMenuRegionClick()
-                            NavigationRegion.NEXT, NavigationRegion.RIGHT -> scrollDown()
-                            NavigationRegion.PREV, NavigationRegion.LEFT -> scrollUp()
+                            NavigationRegion.NEXT, NavigationRegion.RIGHT -> scrollWebtoonPage(
+                                forward = true,
+                                pageLoader = pageLoader,
+                                sidePaddingPercent = paddingPercent,
+                            )
+                            NavigationRegion.PREV, NavigationRegion.LEFT -> scrollWebtoonPage(
+                                forward = false,
+                                pageLoader = pageLoader,
+                                sidePaddingPercent = paddingPercent,
+                            )
                         }
                     }
                 }

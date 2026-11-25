@@ -28,6 +28,10 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.flatMapMerge
 import kotlinx.coroutines.flow.map
 
+const val PAGE_EDGE_ALIGN_TOP = 0
+const val PAGE_EDGE_ALIGN_BOTTOM = 1
+const val PAGE_EDGE_ALIGN_CENTER = 2
+
 @Stable
 @Composable
 inline fun <R, T> PrefDelegate<T>.collectAsState(crossinline transform: @DisallowComposableCalls (T) -> R): State<R> {
@@ -167,6 +171,12 @@ object Settings : DataStorePreferences(null) {
     val fullscreen = boolPref("fullscreen", true)
     val cutoutShort = boolPref("cutout_short", true)
     val keepScreenOn = boolPref("pref_keep_screen_on_key", true)
+    val autoPageTurn = boolPref("pref_auto_page_turn", false)
+    val autoPageTurnInterval = intPref("pref_auto_page_turn_interval", 5)
+    val animatedPlayback = boolPref("pref_animated_playback", true)
+    val animatedPlaybackNeighbors = boolPref("pref_animated_playback_neighbors", true)
+    val animatedPlaybackPreload = intPref("pref_animated_playback_preload", 5)
+    val animatedPlaybackSpeed = floatPref("pref_animated_playback_speed", 1f)
     val readerLongTapAction = boolPref("reader_long_tap", true)
     val pageTransitions = boolPref("pref_enable_transitions_key", true)
     val readWithVolumeKeys = boolPref("reader_volume_keys", false)
@@ -180,6 +190,10 @@ object Settings : DataStorePreferences(null) {
     val webtoonSidePadding = intPref("webtoon_side_padding", 0)
     val navigateToPan = boolPref("navigate_pan", true)
     val imageScaleType = intPref("pref_image_scale_type_key", 1)
+    val pageEdgeAlignment = boolPref("pref_page_edge_alignment", true)
+    val pageEdgeAlignmentNext = intPref("pref_page_edge_alignment_next", PAGE_EDGE_ALIGN_TOP)
+    val pageEdgeAlignmentPrev = intPref("pref_page_edge_alignment_prev", PAGE_EDGE_ALIGN_BOTTOM)
+    val pageEdgeAlignmentCenter = boolPref("pref_page_edge_alignment_center", false)
     val landscapeZoom = boolPref("landscape_zoom", false)
     val zoomStart = intPref("pref_zoom_start_key", 1)
     val showNavigationOverlayNewUser = boolPref("reader_navigation_overlay_new_user", true)
@@ -197,6 +211,14 @@ object Settings : DataStorePreferences(null) {
             val orientation = pref[orientationMode]
             if (OrientationType.entries.none { it.prefValue == orientation }) {
                 pref.remove(orientationMode)
+            }
+            val preload = pref[animatedPlaybackPreload]
+            if (preload !in listOf(1, 2, 3, 5)) {
+                pref[animatedPlaybackPreload] = preload.coerceIn(1, 5).let { if (it == 4) 5 else it }
+            }
+            val speed = pref[animatedPlaybackSpeed]
+            if (!speed.isFinite()) {
+                pref[animatedPlaybackSpeed] = 1f
             }
         }
     }

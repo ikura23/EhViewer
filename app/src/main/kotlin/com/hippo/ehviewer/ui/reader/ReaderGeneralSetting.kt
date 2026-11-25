@@ -8,6 +8,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.integerArrayResource
 import androidx.compose.ui.res.stringArrayResource
@@ -56,6 +57,24 @@ fun ReaderGeneralSetting() = Column(modifier = Modifier.verticalScroll(rememberS
         title = stringResource(id = R.string.pref_keep_screen_on),
         field = Settings.keepScreenOn.asMutableState(),
     )
+    val autoPageTurn = Settings.autoPageTurn.asMutableState()
+    SwitchChoice(
+        title = stringResource(id = R.string.pref_auto_page_turn),
+        field = autoPageTurn,
+    )
+    AnimatedVisibility(visible = autoPageTurn.value) {
+        val resources = LocalResources.current
+        SpinnerChoice(
+            title = stringResource(id = R.string.pref_auto_page_turn_interval),
+            entries = remember(resources) {
+                autoPageTurnIntervals
+                    .map { resources.getString(R.string.auto_page_turn_interval_seconds, it) }
+                    .toTypedArray()
+            },
+            values = autoPageTurnIntervals,
+            field = Settings.autoPageTurnInterval.asMutableState(),
+        )
+    }
     SwitchChoice(
         title = stringResource(id = R.string.pref_read_with_long_tap),
         field = Settings.readerLongTapAction.asMutableState(),
@@ -76,3 +95,5 @@ fun ReaderGeneralSetting() = Column(modifier = Modifier.verticalScroll(rememberS
         )
     }
 }
+
+private val autoPageTurnIntervals = listOf(1, 2, 3, 4, 5, 8, 10, 15, 20, 30, 60)

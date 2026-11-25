@@ -277,6 +277,11 @@
         <item>@string/scale_type_smart_fit</item>
     </string-array>
 
+    <string-array name="page_edge_alignment">
+        <item>@string/page_edge_alignment_top</item>
+        <item>@string/page_edge_alignment_bottom</item>
+    </string-array>
+
     <string-array name="zoom_start">
         <item>@string/zoom_start_automatic</item>
         <item>@string/zoom_start_left</item>

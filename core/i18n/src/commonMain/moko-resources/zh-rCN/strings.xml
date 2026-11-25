@@ -519,6 +519,18 @@
     <string name="export_as_archive_failed">导出失败</string>
     <!-- Tachiyomi Reader Start-->
     <string name="action_settings">设置</string>
+    <string name="pref_page_edge_alignment">翻页时对齐图片边缘</string>
+    <string name="pref_page_edge_alignment_next">下一页对齐</string>
+    <string name="pref_page_edge_alignment_prev">上一页对齐</string>
+    <string name="pref_page_edge_alignment_center">始终居中（屏幕正中）</string>
+    <string name="page_edge_alignment_top">向上对齐（顶部）</string>
+    <string name="page_edge_alignment_center">始终居中（屏幕正中）</string>
+    <string name="page_edge_alignment_bottom">向下对齐（底部）</string>
+    <string name="pref_auto_page_turn">自动翻页</string>
+    <string name="pref_auto_page_turn_interval">自动翻页间隔</string>
+    <string name="auto_page_turn_interval_seconds">%1$d 秒</string>
+    <string name="auto_page_turn_start">开始自动翻页</string>
+    <string name="auto_page_turn_stop">停止自动翻页</string>
     <string name="action_retry">重试</string>
     <string name="action_share">分享</string>
     <string name="action_copy">复制</string>

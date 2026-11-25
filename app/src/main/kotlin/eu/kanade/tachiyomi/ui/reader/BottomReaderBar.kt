@@ -6,6 +6,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExposedDropdownMenu
@@ -69,6 +71,14 @@ fun BottomReaderBar(onClickSettings: () -> Unit, containerColor: Color) = Flexib
         onClick = { cropBorder = !cropBorder },
         imageVector = if (cropBorder) EhIcons.Default.Crop else EhIcons.Default.CropOff,
         contentDescription = stringResource(R.string.pref_crop_borders),
+    )
+    var autoPageTurn by Settings.autoPageTurn.asMutableState()
+    ActionButton(
+        onClick = { autoPageTurn = !autoPageTurn },
+        imageVector = if (autoPageTurn) Icons.Default.Pause else Icons.Default.PlayArrow,
+        contentDescription = stringResource(
+            if (autoPageTurn) R.string.auto_page_turn_stop else R.string.auto_page_turn_start,
+        ),
     )
     ActionButton(
         onClick = onClickSettings,

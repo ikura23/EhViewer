@@ -301,6 +301,13 @@ fun ReaderScreen(pageLoader: PageLoader, info: BaseGalleryInfo?) {
                     }
                 }.fillMaxSize().windowInsetsPadding(insets),
             )
+            AutoPageTurnEffect(
+                isWebtoon = isWebtoon,
+                appbarVisible = appbarVisible,
+                pagerState = pagerState,
+                lazyListState = lazyListState,
+                pageLoader = pageLoader,
+            )
         }
         val brightness by Settings.customBrightness.collectAsState()
         val brightnessValue by Settings.customBrightnessValue.collectAsState()

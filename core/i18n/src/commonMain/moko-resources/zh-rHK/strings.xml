@@ -410,6 +410,18 @@
 
     <!-- Tachiyomi Reader Start-->
     <string name="action_settings">設定</string>
+    <string name="pref_page_edge_alignment">翻頁時對齊圖片邊緣</string>
+    <string name="pref_page_edge_alignment_next">下一頁對齊</string>
+    <string name="pref_page_edge_alignment_prev">上一頁對齊</string>
+    <string name="pref_page_edge_alignment_center">始終居中（螢幕正中）</string>
+    <string name="page_edge_alignment_top">向上對齊（頂部）</string>
+    <string name="page_edge_alignment_center">始終居中（螢幕正中）</string>
+    <string name="page_edge_alignment_bottom">向下對齊（底部）</string>
+    <string name="pref_auto_page_turn">自動翻頁</string>
+    <string name="pref_auto_page_turn_interval">自動翻頁間隔</string>
+    <string name="auto_page_turn_interval_seconds">%1$d 秒</string>
+    <string name="auto_page_turn_start">開始自動翻頁</string>
+    <string name="auto_page_turn_stop">停止自動翻頁</string>
     <string name="action_retry">重試</string>
     <string name="action_share">分享</string>
     <string name="action_save">儲存</string>

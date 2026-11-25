@@ -10,9 +10,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -28,6 +30,7 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.toSize
 import arrow.core.partially1
+import com.hippo.ehviewer.PAGE_EDGE_ALIGN_BOTTOM
 import com.hippo.ehviewer.Settings
 import com.hippo.ehviewer.collectAsState
 import com.hippo.ehviewer.gallery.Page
@@ -66,12 +69,26 @@ fun PagerViewer(
     val scope = rememberCoroutineScope()
     val items = pageLoader.pages
     val scaleType by Settings.imageScaleType.collectAsState()
+    val alignPageEdges by Settings.pageEdgeAlignment.collectAsState()
+    val alignNext by Settings.pageEdgeAlignmentNext.collectAsState()
+    val alignPrev by Settings.pageEdgeAlignmentPrev.collectAsState()
+    val alignCenter by Settings.pageEdgeAlignmentCenter.collectAsState()
     val landscapeZoom by Settings.landscapeZoom.collectAsState()
     val zoomStart by Settings.zoomStart.collectAsState()
     val alignment = Alignment.fromPreferences(zoomStart, isRtl, isVertical)
     val layoutSize by remember(pagerState) {
         derivedStateOf {
             pagerState.layoutInfo.viewportSize.toSize()
+        }
+    }
+    var isBackwardNavigation by remember(pagerState) { mutableStateOf(false) }
+    LaunchedEffect(pagerState) {
+        var previousPage = pagerState.currentPage
+        snapshotFlow { pagerState.currentPage }.collect { currentPage ->
+            if (currentPage != previousPage) {
+                isBackwardNavigation = currentPage < previousPage
+                previousPage = currentPage
+            }
         }
     }
     if (isVertical) {
@@ -86,6 +103,11 @@ fun PagerViewer(
                 page = page,
                 pageLoader = pageLoader,
                 isRtl = false,
+                isBackwardNavigation = isBackwardNavigation,
+                alignPageEdges = alignPageEdges,
+                alignNext = alignNext,
+                alignPrev = alignPrev,
+                alignCenter = alignCenter,
                 scaleType = scaleType,
                 landscapeZoom = landscapeZoom,
                 alignment = alignment,
@@ -111,6 +133,11 @@ fun PagerViewer(
                 page = page,
                 pageLoader = pageLoader,
                 isRtl = isRtl,
+                isBackwardNavigation = isBackwardNavigation,
+                alignPageEdges = alignPageEdges,
+                alignNext = alignNext,
+                alignPrev = alignPrev,
+                alignCenter = alignCenter,
                 scaleType = scaleType,
                 landscapeZoom = landscapeZoom,
                 alignment = alignment,
@@ -130,6 +157,11 @@ private fun PageContainer(
     page: Page,
     pageLoader: PageLoader,
     isRtl: Boolean,
+    isBackwardNavigation: Boolean,
+    alignPageEdges: Boolean,
+    alignNext: Int,
+    alignPrev: Int,
+    alignCenter: Boolean,
     scaleType: Int,
     landscapeZoom: Boolean,
     alignment: Alignment.Horizontal,
@@ -144,11 +176,13 @@ private fun PageContainer(
     val isRtl by rememberUpdatedState(isRtl)
     val zoomableState = rememberZoomableState(zoomSpec = PagerZoomSpec)
     val status = page.statusObserved
+    val isBackwardPage = page.index < pagerState.currentPage ||
+        (page.index == pagerState.currentPage && isBackwardNavigation)
     if (status is PageStatus.Ready && layoutSize != Size.Zero) {
         val size = status.image.intrinsicSize.toSize()
         val contentScale = ContentScale.fromPreferences(scaleType, size, layoutSize)
         zoomableState.contentScale = contentScale
-        LaunchedEffect(size, contentScale, alignment) {
+        LaunchedEffect(size, contentScale, alignment, isBackwardPage, alignPageEdges, alignNext, alignPrev, alignCenter, layoutSize) {
             val contentSize = if (contentScale is FixedScale) { // Original
                 size
             } else {
@@ -159,10 +193,20 @@ private fun PageContainer(
             } else {
                 Alignment.CenterHorizontally
             }
-            val verticalAlignment = if (contentSize.height > layoutSize.height) {
-                Alignment.Top
-            } else {
-                Alignment.CenterVertically
+            val verticalAlignment = when {
+                // Align the newly entered edge according to the per-direction setting.
+                alignPageEdges -> {
+                    if (alignCenter) {
+                        Alignment.CenterVertically
+                    } else {
+                        when (if (isBackwardPage) alignPrev else alignNext) {
+                            PAGE_EDGE_ALIGN_BOTTOM -> Alignment.Bottom
+                            else -> Alignment.Top
+                        }
+                    }
+                }
+                contentSize.height > layoutSize.height -> Alignment.Top
+                else -> Alignment.CenterVertically
             }
             zoomableState.contentAlignment = horizontalAlignment + verticalAlignment
         }

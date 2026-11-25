@@ -18,6 +18,8 @@ import androidx.compose.ui.res.stringArrayResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.ehviewer.core.i18n.R
+import com.hippo.ehviewer.PAGE_EDGE_ALIGN_BOTTOM
+import com.hippo.ehviewer.PAGE_EDGE_ALIGN_TOP
 import com.hippo.ehviewer.Settings
 import com.hippo.ehviewer.asMutableState
 import eu.kanade.tachiyomi.ui.reader.setting.OrientationType
@@ -43,6 +45,42 @@ fun ReaderModeSetting(isWebtoon: Boolean) = Column(modifier = Modifier.verticalS
             WebtoonSetting()
         } else {
             PagerSetting()
+        }
+    }
+    Spacer(modifier = Modifier.size(16.dp))
+    PageEdgeAlignmentSetting()
+}
+
+@Composable
+private fun PageEdgeAlignmentSetting() {
+    val enabled = Settings.pageEdgeAlignment.asMutableState()
+    val center = Settings.pageEdgeAlignmentCenter.asMutableState()
+    SwitchChoice(
+        title = stringResource(id = R.string.pref_page_edge_alignment),
+        field = enabled,
+    )
+    AnimatedVisibility(visible = enabled.value) {
+        Column {
+            SwitchChoice(
+                title = stringResource(id = R.string.pref_page_edge_alignment_center),
+                field = center,
+            )
+            AnimatedVisibility(visible = !center.value) {
+                Column {
+                    SpinnerChoice(
+                        title = stringResource(id = R.string.pref_page_edge_alignment_next),
+                        entries = stringArrayResource(id = com.hippo.ehviewer.R.array.page_edge_alignment),
+                        values = listOf(PAGE_EDGE_ALIGN_TOP, PAGE_EDGE_ALIGN_BOTTOM),
+                        field = Settings.pageEdgeAlignmentNext.asMutableState(),
+                    )
+                    SpinnerChoice(
+                        title = stringResource(id = R.string.pref_page_edge_alignment_prev),
+                        entries = stringArrayResource(id = com.hippo.ehviewer.R.array.page_edge_alignment),
+                        values = listOf(PAGE_EDGE_ALIGN_TOP, PAGE_EDGE_ALIGN_BOTTOM),
+                        field = Settings.pageEdgeAlignmentPrev.asMutableState(),
+                    )
+                }
+            }
         }
     }
 }
