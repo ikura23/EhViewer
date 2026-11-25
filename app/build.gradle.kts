@@ -279,6 +279,7 @@ dependencies {
 
     debugImplementation(libs.compose.ui.tooling)
     implementation(libs.compose.ui.tooling.preview)
+    testImplementation("junit:junit:4.13.2")
 }
 
 kotlin {

@@ -1,5 +1,6 @@
 package com.hippo.ehviewer.spider
 
+import android.os.SystemClock
 import androidx.collection.MutableObjectIntMap
 import androidx.collection.mutableObjectIntMapOf
 import arrow.fx.coroutines.fixedRate
@@ -14,6 +15,7 @@ import io.ktor.client.plugins.timeout
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.HttpStatement
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.math.pow
 import kotlin.math.roundToInt
@@ -25,6 +27,7 @@ import kotlin.time.Instant
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.mapNotNull
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -71,6 +74,7 @@ suspend inline fun <R> timeoutBySpeed(
     noinline t: OnTimeout = { throw it },
 ) = coroutineScope {
     val onTimeout = AtomicReference<OnTimeout?>(t).let { { e: IOException -> it.exchange(null)?.invoke(e) } }
+    val lastProgress = AtomicLong(SystemClock.elapsedRealtime())
     val watchdog = launch {
         val timeout = 10.seconds
         delay(timeout)
@@ -80,6 +84,7 @@ suspend inline fun <R> timeoutBySpeed(
     request {
         var prev = 0L
         onDownload { done, total ->
+            lastProgress.set(SystemClock.elapsedRealtime())
             val total = total ?: Long.MAX_VALUE
             val bytesRead = (done - prev).toInt()
             if (done == total) {
@@ -93,6 +98,7 @@ suspend inline fun <R> timeoutBySpeed(
         timeout { reset() }
     }.executeSafely { resp ->
         watchdog.cancel()
+        lastProgress.set(SystemClock.elapsedRealtime())
         resp.status.ensureSuccess()
         val speedWatchdog = launch {
             val timeoutSpeed = speedLevelToSpeed(Settings.timeoutSpeed.value) * 1024L
@@ -102,10 +108,21 @@ suspend inline fun <R> timeoutBySpeed(
                 }
             }
         }
+        // 流式传输完全卡死时（超过 30 秒无任何字节进度）兜底触发超时中断，防止协程永久挂起。
+        val stallWatchdog = launch {
+            while (isActive) {
+                delay(5_000)
+                if (SystemClock.elapsedRealtime() - lastProgress.get() >= 30_000L) {
+                    onTimeout(LowSpeedException(url, 0L))
+                    break
+                }
+            }
+        }
         try {
             f(resp)
         } finally {
             speedWatchdog.cancel()
+            stallWatchdog.cancel()
         }
     }
 }

@@ -64,10 +64,10 @@ object EhDB {
     suspend fun putReadProgress(gid: Long, page: Int) = db.progressDao().upsert(ProgressInfo(gid, page))
     suspend fun clearProgressInfo() = db.progressDao().deleteAll()
 
-    suspend fun getAllDownloadInfo() = db.downloadsDao().joinList().onEach {
-        if (it.state == DownloadInfo.STATE_WAIT || it.state == DownloadInfo.STATE_DOWNLOAD) {
-            it.state = DownloadInfo.STATE_NONE
-        }
+    suspend fun getAllDownloadInfo() = db.downloadsDao().joinList()
+
+    suspend fun updateDownloadStates(downloads: List<com.ehviewer.core.database.model.DownloadEntity>) {
+        if (downloads.isNotEmpty()) db.downloadsDao().update(downloads)
     }
 
     suspend fun updateDownloadInfo(downloadInfo: Collection<DownloadInfo>) {
