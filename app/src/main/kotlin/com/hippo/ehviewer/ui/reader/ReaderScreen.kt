@@ -55,6 +55,7 @@ import arrow.core.Either
 import arrow.core.Either.Companion.catch
 import arrow.core.raise.ensure
 import arrow.core.right
+import com.ehviewer.core.files.isDirectory
 import com.ehviewer.core.i18n.R
 import com.ehviewer.core.model.BaseGalleryInfo
 import com.ehviewer.core.ui.util.Await
@@ -69,6 +70,9 @@ import com.hippo.ehviewer.Settings
 import com.hippo.ehviewer.collectAsState
 import com.hippo.ehviewer.download.DownloadManager
 import com.hippo.ehviewer.download.archiveFile
+import com.hippo.ehviewer.download.downloadDir
+import com.hippo.ehviewer.download.isLocal
+import com.hippo.ehviewer.gallery.LocalFolderPageLoader
 import com.hippo.ehviewer.gallery.Page
 import com.hippo.ehviewer.gallery.PageLoader
 import com.hippo.ehviewer.gallery.PageStatus
@@ -96,6 +100,7 @@ import kotlin.coroutines.resume
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.onCompletion
@@ -550,11 +555,28 @@ suspend inline fun <T> usePageLoader(args: ReaderScreenArgs, crossinline block: 
     is ReaderScreenArgs.Gallery -> {
         val info = args.info
         val page = args.page.takeUnless { it == -1 } ?: EhDB.getReadProgress(info.gid)
-        val archive = DownloadManager.getDownloadInfo(info.gid)?.archiveFile
-        if (archive != null) {
-            useArchivePageLoader(archive, info, page, info.hasAds, { error("Managed Archive have password???") }, block)
+        val download = DownloadManager.getDownloadInfo(info.gid)
+        // 只有明确的本地导入条目才用目录加载器。普通下载即使目录里已经有图片，
+        // 也必须走网络加载器按详情页数补页；否则部分下载（9/531）会被 files.size
+        // 截断成 9 页，在线阅读显示 9/9 且翻不过去。
+        val localDir = download?.takeIf { it.isLocal }?.downloadDir?.takeIf { it.isDirectory }
+        val localFiles = localDir?.let { LocalFolderPageLoader.imageFiles(it) }
+        if (!localFiles.isNullOrEmpty()) {
+            coroutineScope {
+                val loader = LocalFolderPageLoader(this, info, page, localFiles)
+                try {
+                    block(loader)
+                } finally {
+                    loader.close()
+                }
+            }
         } else {
-            useEhPageLoader(info, page, block)
+            val archive = download?.archiveFile
+            if (archive != null) {
+                useArchivePageLoader(archive, info, page, info.hasAds, { error("Managed Archive have password???") }, block)
+            } else {
+                useEhPageLoader(info, page, block)
+            }
         }
     }
     is ReaderScreenArgs.Archive -> useArchivePageLoader(

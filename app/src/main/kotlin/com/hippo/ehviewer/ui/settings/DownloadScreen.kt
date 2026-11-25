@@ -53,8 +53,10 @@ import com.hippo.ehviewer.client.EhUrl
 import com.hippo.ehviewer.client.parser.GalleryDetailUrlParser
 import com.hippo.ehviewer.client.parser.ParserUtils
 import com.hippo.ehviewer.download.DownloadManager
+import com.hippo.ehviewer.download.LocalGalleryScanner
 import com.hippo.ehviewer.download.downloadDir
 import com.hippo.ehviewer.download.downloadLocation
+import com.hippo.ehviewer.download.isLocal
 import com.hippo.ehviewer.spider.COMIC_INFO_FILE
 import com.hippo.ehviewer.spider.MIN_SPEED_LEVEL
 import com.hippo.ehviewer.spider.SpiderDen
@@ -234,7 +236,7 @@ fun AnimatedVisibilityScope.DownloadScreen(navigator: DestinationsNavigator) = S
 
                 runSuspendCatching {
                     DownloadManager.downloadInfoList.parMapNotNull {
-                        if (it.state == DownloadInfo.STATE_FINISH && !it.isStable()) it else null
+                        if (it.state == DownloadInfo.STATE_FINISH && !it.isLocal && !it.isStable()) it else null
                     }.apply {
                         fillGalleryListByApi(this, EhUrl.referer)
                         val toUpdate = parMap { di ->
@@ -302,6 +304,24 @@ fun AnimatedVisibilityScope.DownloadScreen(navigator: DestinationsNavigator) = S
                 }
             }
             WorkPreference(
+                title = stringResource(id = R.string.download_scan_local),
+                summary = stringResource(id = R.string.settings_download_restore_download_items_summary),
+            ) {
+                if (!LocalGalleryScanner.hasAllFilesAccess()) {
+                    launchSnackbar(string(R.string.download_scan_local_permission))
+                    LocalGalleryScanner.openAllFilesAccessSettings(appCtx)
+                } else {
+                    val result = LocalGalleryScanner.scan()
+                    launchSnackbar(
+                        string(
+                            R.string.download_scan_local_result,
+                            result.scannedDirectories,
+                            result.imported,
+                        ),
+                    )
+                }
+            }
+            WorkPreference(
                 title = stringResource(id = R.string.settings_download_clean_redundancy),
                 summary = stringResource(id = R.string.settings_download_clean_redundancy_summary),
             ) {
@@ -309,7 +329,8 @@ fun AnimatedVisibilityScope.DownloadScreen(navigator: DestinationsNavigator) = S
                     if (!file.isDirectory) return false
                     val name = file.name
                     val gid = name.substringBefore('-').toLongOrNull() ?: return false
-                    return name != DownloadManager.getDownloadInfo(gid)?.dirname
+                    val info = DownloadManager.getDownloadInfo(gid) ?: return true
+                    return name != info.dirname && file != info.downloadDir
                 }
                 val list = downloadLocation.list().filter(::isRedundant)
                 if (list.isNotEmpty()) {

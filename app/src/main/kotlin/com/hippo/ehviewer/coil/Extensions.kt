@@ -19,7 +19,9 @@ import com.hippo.ehviewer.ktbuilder.execute
 
 // Load in original size so the memory cache can be reused for preload requests
 fun ImageRequest.Builder.ehUrl(info: GalleryInfo) = apply {
-    val key = info.thumbKey!!
+    // Imported local galleries have no remote thumbKey. Let the caller render a local
+    // placeholder instead of crashing the whole downloads screen.
+    val key = info.thumbKey ?: return@apply
     data(info.thumbUrl)
     size(SizeResolver.ORIGINAL)
     val downloadInfo = (info as? DownloadInfo) ?: DownloadManager.getDownloadInfo(info.gid)

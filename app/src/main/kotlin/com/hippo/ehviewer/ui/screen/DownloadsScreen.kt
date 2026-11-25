@@ -1,7 +1,11 @@
 package com.hippo.ehviewer.ui.screen
 
 import android.content.Context
+import android.content.Intent
 import android.view.ViewConfiguration
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.animateDpAsState
@@ -70,6 +74,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSerializable
@@ -81,7 +86,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.dimensionResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -118,6 +125,7 @@ import com.hippo.ehviewer.collectAsState
 import com.hippo.ehviewer.download.DownloadManager
 import com.hippo.ehviewer.download.DownloadService
 import com.hippo.ehviewer.download.DownloadsFilterMode
+import com.hippo.ehviewer.download.LocalGalleryScanner
 import com.hippo.ehviewer.download.SortMode
 import com.hippo.ehviewer.ui.DrawerHandle
 import com.hippo.ehviewer.ui.Screen
@@ -137,6 +145,7 @@ import com.ramcosta.composedestinations.annotation.RootGraph
 import com.ramcosta.composedestinations.navigation.DestinationsNavigator
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch as coroutineLaunch
 import moe.tarsin.navigate
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
@@ -154,6 +163,65 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
     var searchBarExpanded by rememberSaveable { mutableStateOf(false) }
     var searchBarOffsetY by remember { mutableIntStateOf(0) }
     val animateItems by Settings.animateItems.collectAsState()
+    val scope = rememberCoroutineScope()
+    val appContext = LocalContext.current
+    val appResources = LocalResources.current
+    LaunchedEffect(Unit) {
+        launchIO {
+            if (LocalGalleryScanner.hasAllFilesAccess()) {
+                LocalGalleryScanner.scan()
+                withUIContext { invalidateKey = !invalidateKey }
+            }
+        }
+    }
+    val folderScanLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        launchIO {
+            runCatching {
+                appContext.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
+            if (!LocalGalleryScanner.hasAllFilesAccess()) {
+                scope.coroutineLaunch {
+                    Toast.makeText(
+                        appContext,
+                        appResources.getString(R.string.download_scan_local_permission),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                    LocalGalleryScanner.openAllFilesAccessSettings(appContext)
+                }
+                return@launchIO
+            }
+            val folder = LocalGalleryScanner.resolveTreePath(uri)
+            if (folder == null) {
+                scope.coroutineLaunch {
+                    Toast.makeText(
+                        appContext,
+                        appResources.getString(R.string.download_scan_folder_invalid),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+                return@launchIO
+            }
+            val result = LocalGalleryScanner.scan(listOf(folder))
+            scope.coroutineLaunch {
+                invalidateKey = !invalidateKey
+                Toast.makeText(
+                    appContext,
+                    appResources.getString(
+                        R.string.download_scan_local_result,
+                        result.scannedDirectories,
+                        result.imported,
+                    ),
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+        }
+    }
 
     var fabExpanded by remember { mutableStateOf(false) }
     var fabHidden by remember { mutableStateOf(false) }
@@ -514,6 +582,55 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
                     },
                 )
                 DropdownMenuItem(
+                    text = { Text(text = stringResource(id = R.string.download_scan_local)) },
+                    onClick = {
+                        expanded = false
+                        launchIO {
+                            if (!LocalGalleryScanner.hasAllFilesAccess()) {
+                                val context = contextOf<Context>()
+                                scope.coroutineLaunch {
+                                    Toast.makeText(
+                                        context,
+                                        appResources.getString(R.string.download_scan_local_permission),
+                                        Toast.LENGTH_LONG,
+                                    ).show()
+                                    LocalGalleryScanner.openAllFilesAccessSettings(context)
+                                }
+                                return@launchIO
+                            }
+                            val result = LocalGalleryScanner.scan()
+                            scope.coroutineLaunch {
+                                invalidateKey = !invalidateKey
+                                Toast.makeText(
+                                    contextOf<Context>(),
+                                    appResources.getString(
+                                        R.string.download_scan_local_result,
+                                        result.scannedDirectories,
+                                        result.imported,
+                                    ),
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            }
+                        }
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text(text = stringResource(id = R.string.download_scan_folder)) },
+                    onClick = {
+                        expanded = false
+                        if (!LocalGalleryScanner.hasAllFilesAccess()) {
+                            Toast.makeText(
+                                appContext,
+                                appResources.getString(R.string.download_scan_local_permission),
+                                Toast.LENGTH_LONG,
+                            ).show()
+                            LocalGalleryScanner.openAllFilesAccessSettings(appContext)
+                        } else {
+                            folderScanLauncher.launch(null)
+                        }
+                    },
+                )
+                DropdownMenuItem(
                     text = { Text(text = stringResource(id = R.string.download_start_all)) },
                     onClick = {
                         expanded = false
@@ -638,6 +755,7 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
                                 info = info,
                                 selectMode = selectMode,
                                 showProgress = showProgress,
+                                thumbnailRefreshKey = invalidateKey,
                                 modifier = Modifier.height(height),
                                 interactionSource = interactionSource,
                             )

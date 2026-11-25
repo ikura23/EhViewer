@@ -35,6 +35,7 @@ import com.ehviewer.core.database.model.DownloadInfo
 import com.ehviewer.core.database.model.DownloadLabel
 import com.ehviewer.core.files.delete
 import com.ehviewer.core.files.find
+import com.ehviewer.core.files.isFile
 import com.ehviewer.core.files.toOkioPath
 import com.ehviewer.core.files.toUri
 import com.ehviewer.core.model.BaseGalleryInfo
@@ -325,6 +326,64 @@ object DownloadManager : OnSpiderListener, CoroutineScope {
         mutableNotifyFlow.emit(info)
     }
 
+    suspend fun importLocalDownload(
+        galleryInfo: BaseGalleryInfo,
+        absolutePath: String,
+        pages: Int,
+        label: String? = "本地",
+    ): Boolean {
+        if (containDownloadInfo(galleryInfo.gid)) return false
+        if (label != null) addLabel(label)
+        galleryInfo.pages = pages
+        val info = DownloadInfo(galleryInfo.asEntity(), absolutePath)
+        info.state = DownloadInfo.STATE_FINISH
+        info.pages = pages
+        info.downloaded = pages
+        info.total = pages
+        info.finished = pages
+        info.label = label
+        sortMutex.withLock {
+            allInfoList.insertWith(info, sortMode.comparator())
+        }
+        mAllInfoMap[galleryInfo.gid] = info
+        EhDB.putDownloadDirname(galleryInfo.gid, absolutePath)
+        EhDB.putDownloadInfo(info)
+        mutableNotifyFlow.emit(info)
+        return true
+    }
+
+    suspend fun attachLocalDirname(
+        gid: Long,
+        absolutePath: String,
+        thumbKey: String? = null,
+        pages: Int = 0,
+        title: String? = null,
+    ): Boolean {
+        val old = mAllInfoMap[gid] ?: return false
+        if (old.state != DownloadInfo.STATE_FINISH) return false
+        if (pages > 0 && old.pages > pages) return false
+        if (old.dirname == absolutePath &&
+            (thumbKey == null || old.thumbKey == thumbKey) &&
+            (title == null || old.title == title) &&
+            (pages <= 0 || old.pages >= pages)
+        ) {
+            return false
+        }
+        if (title != null) old.galleryInfo.title = title
+        if (thumbKey != null) old.galleryInfo.thumbKey = thumbKey
+        if (pages > 0 && old.pages < pages) old.galleryInfo.pages = pages
+        val info = old.copy(dirname = absolutePath)
+        sortMutex.withLock {
+            val idx = allInfoList.indexOfFirst { it.gid == gid }
+            if (idx >= 0) allInfoList[idx] = info
+        }
+        mAllInfoMap[gid] = info
+        EhDB.putDownloadDirname(gid, absolutePath)
+        EhDB.putDownloadInfo(info)
+        mutableNotifyFlow.emit(info)
+        return true
+    }
+
     suspend fun stopDownload(gid: Long) {
         val info = stopDownloadInternal(gid)
         if (info != null) {
@@ -385,7 +444,7 @@ object DownloadManager : OnSpiderListener, CoroutineScope {
             // Ensure download
             ensureDownload()
 
-            if (deleteFiles) {
+            if (deleteFiles && !info.isLocal) {
                 info.downloadDir?.delete()
                 info.tempDownloadDir?.delete()
                 EhDB.removeDownloadDirname(info.gid)
@@ -399,6 +458,7 @@ object DownloadManager : OnSpiderListener, CoroutineScope {
             mAllInfoMap.remove(gid)
         }
         EhDB.removeDownloadInfo(list)
+        list.filter { it.isLocal }.forEach { EhDB.removeDownloadDirname(it.gid) }
         sortMutex.withLock {
             allInfoList.removeAll(list.toSet())
         }
@@ -839,6 +899,20 @@ var downloadLocation: Path
         }
     }
 
-val DownloadInfo.downloadDir get() = dirname?.let { downloadLocation / it }
-val DownloadInfo.archiveFile get() = downloadDir?.run { find("$gid.cbz") ?: find("$gid.zip") }
+/**
+ * 凡以绝对路径（`/` 开头）登记的条目一律视为外部本地只读引用，与可变 UI 标签解耦：
+ * 绝不执行主线程阻塞 I/O，也绝不因移动/删除标签导致误删磁盘原文件。
+ */
+val DownloadInfo.isLocal get() = dirname?.startsWith("/") == true
+val DownloadInfo.downloadDir get() = dirname?.let {
+    if (it.startsWith("/")) it.toPath() else downloadLocation / it
+}
+fun archiveThumbPath(gid: Long): Path = AppConfig.tempDir / "archive-thumb-$gid.jpg"
+
+val DownloadInfo.archiveFile get() = downloadDir?.run {
+    if (isFile) {
+        return@run this
+    }
+    find("$gid.cbz") ?: find("$gid.zip")
+}
 val GalleryInfo.tempDownloadDir get() = AppConfig.externalTempPersistDir?.let { it / "$gid" }

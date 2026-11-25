@@ -68,6 +68,9 @@ object AppConfig {
     val tagTranslationsDir
         get() = (appCtx.filesDir.toOkioPath() / TAG_TRANSLATIONS).apply { check(ensureDirectory()) }
 
+    val localThumbDir
+        get() = (appCtx.cacheDir.toOkioPath() / "local-thumb").apply { check(ensureDirectory()) }
+
     // Following locations will be clear on app startup
     val tempDir
         get() = (appCtx.cacheDir.toOkioPath() / TEMP).apply { check(ensureDirectory()) }

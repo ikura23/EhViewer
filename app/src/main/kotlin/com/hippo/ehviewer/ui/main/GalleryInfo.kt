@@ -37,6 +37,7 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
+import com.ehviewer.core.database.model.DownloadInfo
 import com.ehviewer.core.model.GalleryInfo
 import com.ehviewer.core.model.GalleryInfo.Companion.NOT_FAVORITED
 import com.ehviewer.core.ui.component.CrystalCard
@@ -48,6 +49,7 @@ import com.ehviewer.core.ui.util.listThumbGenerator
 import com.hippo.ehviewer.EhDB
 import com.hippo.ehviewer.client.EhUtils
 import com.hippo.ehviewer.download.DownloadManager
+import com.hippo.ehviewer.download.isLocal
 import com.hippo.ehviewer.util.FavouriteStatusRouter
 
 @Composable
@@ -179,14 +181,20 @@ fun GalleryInfoGridItem(
                     }
                     mutableFloatStateOf(ratio)
                 }
-                AsyncImage(
-                    model = requestOf(info),
-                    contentDescription = null,
-                    modifier = Modifier.aspectRatio(ratio),
-                    onSuccess = {
-                        ratio = (it.result.image.width.toFloat() / it.result.image.height).coerceIn(MIN_RATIO, MAX_RATIO)
-                    },
-                )
+                val localInfo = (info as? DownloadInfo)?.takeIf { it.isLocal }
+                    ?: DownloadManager.getDownloadInfo(info.gid)?.takeIf { it.isLocal }
+                if (localInfo != null) {
+                    LocalDownloadThumb(info = localInfo, modifier = Modifier.aspectRatio(ratio))
+                } else {
+                    AsyncImage(
+                        model = requestOf(info),
+                        contentDescription = null,
+                        modifier = Modifier.aspectRatio(ratio),
+                        onSuccess = {
+                            ratio = (it.result.image.width.toFloat() / it.result.image.height).coerceIn(MIN_RATIO, MAX_RATIO)
+                        },
+                    )
+                }
             }
         }
         val categoryColor = EhUtils.getCategoryColor(info.category)

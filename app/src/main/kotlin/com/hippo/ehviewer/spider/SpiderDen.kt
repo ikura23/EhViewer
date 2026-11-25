@@ -26,6 +26,7 @@ import com.ehviewer.core.files.exists
 import com.ehviewer.core.files.find
 import com.ehviewer.core.files.isDirectory
 import com.ehviewer.core.files.list
+import com.ehviewer.core.files.metadataOrNull
 import com.ehviewer.core.files.mkdirs
 import com.ehviewer.core.files.moveTo
 import com.ehviewer.core.files.openFileDescriptor
@@ -58,6 +59,7 @@ import kotlin.concurrent.read
 import kotlin.concurrent.write
 import okio.Path
 import okio.Path.Companion.toOkioPath
+import okio.Path.Companion.toPath
 import splitties.init.appCtx
 
 class SpiderDen(val info: GalleryInfo) {
@@ -80,7 +82,7 @@ class SpiderDen(val info: GalleryInfo) {
         get() = tempDownloadDir.takeIf { saveAsCbz } ?: downloadDir
 
     constructor(info: GalleryInfo, dirname: String) : this(info) {
-        downloadDir = downloadLocation / dirname
+        downloadDir = resolveDownloadDir(dirname)
     }
 
     @Volatile
@@ -185,7 +187,28 @@ class SpiderDen(val info: GalleryInfo) {
             val file = resolve(tempFile.name.removeSuffix(TEMP_SUFFIX))
             file.delete()
             lock.write { fileCache.remove(file.name) }
-            tempFile moveTo file
+            // 部分设备上同一目录 rename 可能失败；退回复制到临时文件并校验长度再落盘。
+            runCatching { tempFile moveTo file }.onFailure { moveFailure ->
+                val tempSize = runCatching { tempFile.metadataOrNull()?.size }.getOrNull()
+                if (tempSize == null || tempSize <= 0L) throw moveFailure
+                val staging = resolve("${file.name}.copy.tmp")
+                runCatching {
+                    staging.delete()
+                    tempFile sendTo staging
+                    val copiedSize = staging.metadataOrNull()?.size ?: -1L
+                    check(copiedSize == tempSize) { "Incomplete copy for ${file.name}: $copiedSize != $tempSize" }
+                    runCatching { file.delete() }
+                    runCatching { staging moveTo file }.onFailure {
+                        staging sendTo file
+                        runCatching { staging.delete() }
+                    }
+                }.onFailure { failure ->
+                    runCatching { staging.delete() }
+                    if (!file.exists()) lock.write { fileCache.remove(file.name) }
+                    throw failure
+                }
+            }
+            check(file.exists()) { "Unable to commit ${file.name}" }
             lock.write {
                 fileCache.remove(tempFile.name)
                 fileCache[file.name] = file
@@ -370,7 +393,9 @@ suspend fun GalleryInfo.downloadDirname(): String {
     return dirname
 }
 
+fun resolveDownloadDir(dirname: String): Path = if (dirname.startsWith("/")) dirname.toPath() else downloadLocation / dirname
+
 suspend fun getGalleryDownloadDir(info: GalleryInfo): Path {
     val dirname = info.downloadDirname()
-    return downloadLocation / dirname
+    return resolveDownloadDir(dirname)
 }

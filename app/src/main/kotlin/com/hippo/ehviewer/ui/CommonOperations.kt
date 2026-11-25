@@ -60,6 +60,7 @@ import com.hippo.ehviewer.download.DownloadManager
 import com.hippo.ehviewer.download.DownloadService
 import com.hippo.ehviewer.download.downloadDir
 import com.hippo.ehviewer.download.downloadLocation
+import com.hippo.ehviewer.download.isLocal
 import com.hippo.ehviewer.download.tempDownloadDir
 import com.hippo.ehviewer.ui.destinations.ReaderScreenDestination
 import com.hippo.ehviewer.ui.reader.ReaderScreenArgs
@@ -355,6 +356,11 @@ private suspend fun confirmRemoveDownload(text: String): Boolean {
 
 context(_: DialogState)
 suspend fun confirmRemoveDownload(info: GalleryInfo) {
+    // Imported local galleries are only registry entries. Never offer to delete their files.
+    if (DownloadManager.getDownloadInfo(info.gid)?.isLocal == true) {
+        withIOContext { DownloadManager.deleteDownload(info.gid, false) }
+        return
+    }
     val text = appCtx.getString(R.string.download_remove_dialog_message, EhUtils.getSuitableTitle(info))
     val checked = confirmRemoveDownload(text)
     withIOContext {
@@ -364,6 +370,13 @@ suspend fun confirmRemoveDownload(info: GalleryInfo) {
 
 context(_: DialogState)
 suspend fun confirmRemoveDownloadRange(list: Collection<DownloadInfo>) {
+    // Imported local galleries are only registry entries. Delete immediately, never touch files.
+    if (list.isNotEmpty() && list.all { it.isLocal }) {
+        withIOContext {
+            DownloadManager.deleteRangeDownload(list.mapToLongArray(DownloadInfo::gid))
+        }
+        return
+    }
     val text = appCtx.getString(R.string.download_remove_dialog_message_2, list.size)
     val checked = confirmRemoveDownload(text)
     withIOContext {
@@ -372,6 +385,7 @@ suspend fun confirmRemoveDownloadRange(list: Collection<DownloadInfo>) {
         // Delete image files
         if (checked) {
             list.forEach { info ->
+                if (info.isLocal) return@forEach
                 // Delete file
                 info.downloadDir?.delete()
                 info.tempDownloadDir?.delete()

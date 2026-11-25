@@ -552,6 +552,13 @@
     <string name="animated_playback_preload_pages">%1$d pages</string>
     <string name="pref_animated_playback_speed">Playback speed</string>
     <string name="animated_loading_title">Loading animated images</string>
+    <string name="local_download_label">Local</string>
+    <string name="download_scan_local">Scan local downloaded galleries</string>
+    <string name="download_scan_folder">Choose a folder to scan</string>
+    <string name="download_scan_folder_invalid">Cannot access the selected folder</string>
+    <string name="download_scan_local_count">Imported %d local galleries</string>
+    <string name="download_scan_local_result">Scanned %1$d directories, imported %2$d galleries</string>
+    <string name="download_scan_local_permission">Grant all-files access to scan other apps\' download folders</string>
     <string name="action_confirm">OK</string>
     <string name="action_cancel">Cancel</string>
     <string name="pref_auto_page_turn">Auto page turn</string>

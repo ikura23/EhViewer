@@ -533,6 +533,13 @@
     <string name="animated_playback_preload_pages">%1$d 张</string>
     <string name="pref_animated_playback_speed">动图播放倍率</string>
     <string name="animated_loading_title">正在加载动图</string>
+    <string name="local_download_label">本地</string>
+    <string name="download_scan_local">扫描本地下载画廊</string>
+    <string name="download_scan_folder">选择文件夹扫描</string>
+    <string name="download_scan_folder_invalid">无法访问所选文件夹</string>
+    <string name="download_scan_local_count">已导入 %d 个本地画廊</string>
+    <string name="download_scan_local_result">扫描了 %1$d 个目录，导入 %2$d 个画廊</string>
+    <string name="download_scan_local_permission">需要授予“所有文件访问”权限才能扫描其他应用的下载目录</string>
     <string name="action_confirm">确定</string>
     <string name="action_cancel">取消</string>
     <string name="pref_auto_page_turn">自动翻页</string>
