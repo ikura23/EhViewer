@@ -587,6 +587,56 @@ object DownloadManager : CoroutineScope {
         true
     }
 
+    /**
+     * 纠正位于应用当前下载目录内的条目：若之前曾被本地扫描误标为「本地」标签，
+     * 自动清除该标签并尽量将目录还原为相对子目录名（已有其他自定义分类标签则保留）。
+     */
+    suspend fun normalizeAppDownloadEntry(
+        gid: Long,
+        dirname: String,
+        thumbKey: String? = null,
+        pages: Int = 0,
+        title: String? = null,
+    ): Boolean = commandResult {
+        val old = mAllInfoMap[gid] ?: return@commandResult false
+        if (old.state != DownloadInfo.STATE_FINISH) return@commandResult false
+        if (pages > 0 && old.pages > pages) return@commandResult false
+
+        val normalizedLabel = if (old.label == "本地") null else old.label
+        val labelChanged = old.label != normalizedLabel
+        val dirnameChanged = old.dirname != dirname
+        val thumbChanged = thumbKey != null && old.thumbKey.isNullOrBlank()
+        val titleChanged = !title.isNullOrBlank() && old.title.isNullOrBlank()
+        val pagesChanged = pages > 0 && old.pages < pages
+        if (!labelChanged && !dirnameChanged && !thumbChanged && !titleChanged && !pagesChanged) {
+            return@commandResult false
+        }
+
+        if (titleChanged) old.galleryInfo.title = title
+        if (thumbChanged) old.galleryInfo.thumbKey = thumbKey
+        if (pagesChanged) old.galleryInfo.pages = pages
+
+        val info = old.copy(dirname = dirname)
+        info.label = normalizedLabel
+        mAllInfoMap[gid] = info
+        mutateAllInfoList { list ->
+            val idx = list.indexOfFirst { it.gid == gid }
+            if (idx >= 0) {
+                list[idx] = info
+            } else {
+                list.insertWith(info, sortMode.comparator())
+            }
+        }
+        val gallerySnapshot = info.galleryInfo.toEntitySnapshot()
+        saveStates(listOf(info))
+        persist {
+            EhDB.putDownloadDirname(gid, dirname)
+            EhDB.putGalleryInfo(gallerySnapshot)
+        }
+        mutableNotifyFlow.emit(info)
+        true
+    }
+
     suspend fun stopDownload(gid: Long) = command {
         val info = stopDownloadInternal(gid)
         if (info != null) {

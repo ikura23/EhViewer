@@ -25,6 +25,7 @@ import com.hippo.ehviewer.spider.readCompatFromPath
 import com.hippo.ehviewer.spider.toSimpleTags
 import com.hippo.ehviewer.util.AppConfig
 import java.io.File
+import java.net.URLDecoder
 import java.nio.ByteBuffer
 import java.security.MessageDigest
 import java.util.zip.ZipFile
@@ -32,15 +33,14 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okio.Path
 import okio.Path.Companion.toOkioPath
+import okio.Path.Companion.toPath
 
 /**
- * Imports galleries downloaded by other EhViewer builds without copying their files.
+ * 本地画廊与压缩包扫描导入器，支持免复制直接挂载设备磁盘上的既有画廊目录或 `.cbz`/`.zip` 压缩包。
  *
- * The imported DownloadInfo keeps an absolute path in its dirname. All reader/download path
- * helpers understand absolute paths, so the original gallery directory is used in place.
- *
- * Roots are discovered dynamically because EhViewer forks use different package names and
- * different download folder names.
+ * - 对于应用外部目录：保留绝对路径作为 `dirname` 并标记“本地”标签，避免移动或删除条目时误删磁盘原文件；
+ * - 对于用户当前配置的自定义下载目录（含 Android SAF `content://` 文档树）及默认下载目录：
+ *   自动识别归属并还原相对 `dirname`，不打“本地”标签，同时纠偏此前因重设下载目录而被误标为“本地”的条目。
  */
 object LocalGalleryScanner {
     private const val LOCAL_LABEL = "本地"
@@ -81,9 +81,14 @@ object LocalGalleryScanner {
 
     suspend fun scan(extraRoots: List<Path> = emptyList()): Result = scanMutex.withLock {
         val storage = Environment.getExternalStorageDirectory().toOkioPath()
-        val excluded = excludedAppDownloadRoots()
-        val rawRoots = if (extraRoots.isNotEmpty()) extraRoots else discoverRoots(storage)
-        val roots = deduplicateRoots(rawRoots).filterNot { isUnderAny(it, excluded) }
+        val configuredRoot = resolveConfiguredDownloadRoot(storage.toString())
+        val appDownloadRoots = resolveAppDownloadRoots(configuredRoot)
+        val rawRoots = if (extraRoots.isNotEmpty()) {
+            extraRoots
+        } else {
+            discoverRoots(storage, configuredRoot)
+        }
+        val roots = deduplicateRoots(rawRoots)
         var imported = 0
         var scanned = 0
         for (root in roots) {
@@ -91,17 +96,17 @@ object LocalGalleryScanner {
             pending.addLast(root to 0)
             while (pending.isNotEmpty()) {
                 val (dir, depth) = pending.removeLast()
-                if (isUnderAny(dir, excluded)) continue
                 val entries = runCatching { dir.list() }.getOrElse { continue }
                 for (entry in entries) {
                     if (entry.isDirectory) {
-                        if (isUnderAny(entry, excluded)) continue
                         val gallery = looksLikeGallery(entry)
                         if (gallery) {
                             scanned++
                             val item = runCatching { readLocalItem(entry) }.getOrNull()
                             if (item != null) {
-                                importItem(item, entry, isArchive = false)?.let { if (it) imported++ }
+                                importItem(item, entry, isArchive = false, configuredRoot, appDownloadRoots)?.let {
+                                    if (it) imported++
+                                }
                                 continue
                             }
                         }
@@ -115,29 +120,31 @@ object LocalGalleryScanner {
                     if (!isReadableArchive(entry)) continue
                     scanned++
                     val item = runCatching { readArchiveItem(entry) }.getOrNull() ?: continue
-                    if (importItem(item, entry, isArchive = true) == true) imported++
+                    if (importItem(item, entry, isArchive = true, configuredRoot, appDownloadRoots) == true) {
+                        imported++
+                    }
                 }
             }
         }
         Result(imported, scanned, roots.size)
     }
 
-    private fun canonicalPath(path: Path): String = runCatching {
-        File(path.toString()).canonicalPath
-    }.getOrElse { path.toString() }.trimEnd('/')
+    private fun canonicalPath(path: Path): String = canonicalPath(path.toString())
 
-    private fun excludedAppDownloadRoots(): List<String> = buildList {
-        runCatching { downloadLocation }.getOrNull()
-            ?.takeIf { it.toString().startsWith("/") }
-            ?.let { add(canonicalPath(it)) }
-        AppConfig.defaultDownloadDir?.toOkioPath()?.let { add(canonicalPath(it)) }
-    }.distinct()
+    private fun canonicalPath(raw: String): String = runCatching {
+        File(raw).canonicalPath
+    }.getOrElse { raw }.trimEnd('/').ifEmpty { "/" }
 
-    private fun isUnderAny(path: Path, excluded: List<String>): Boolean {
-        if (excluded.isEmpty()) return false
-        val target = canonicalPath(path)
-        return excluded.any { root -> target == root || target.startsWith("$root/") }
+    private fun resolveConfiguredDownloadRoot(externalStorageRoot: String): String? {
+        val raw = runCatching { downloadLocation.toString() }.getOrNull() ?: return null
+        val resolved = resolveDownloadLocationPath(raw, externalStorageRoot) ?: return null
+        return canonicalPath(resolved)
     }
+
+    private fun resolveAppDownloadRoots(configuredRoot: String?): List<String> = buildList {
+        configuredRoot?.let(::add)
+        AppConfig.defaultDownloadDir?.let { add(canonicalPath(it.absolutePath)) }
+    }.distinct()
 
     /** 去除存在父子包含关系的重复扫描根目录，避免同一目录被多次遍历。 */
     private fun deduplicateRoots(raw: List<Path>): List<Path> {
@@ -151,28 +158,50 @@ object LocalGalleryScanner {
         return kept.map { it.first }
     }
 
-    private suspend fun importItem(item: LocalItem, path: Path, isArchive: Boolean): Boolean? {
+    private suspend fun importItem(
+        item: LocalItem,
+        path: Path,
+        isArchive: Boolean,
+        configuredRoot: String?,
+        appDownloadRoots: List<String>,
+    ): Boolean? {
         if (isArchive) {
             runCatching { ensureArchiveThumb(path, item.gid) }
         }
+        val target = resolveImportTarget(
+            entryCanonicalPath = canonicalPath(path),
+            configuredDownloadRoot = configuredRoot,
+            appDownloadRoots = appDownloadRoots,
+            isArchive = isArchive,
+        )
         val existing = DownloadManager.getDownloadInfo(item.gid)
         if (existing != null) {
             // 正在下载/排队/暂停中的条目不能被本地扫描改写，否则会把未完成的
             // 目录当成"已完成"并覆盖真实页数，导致下载永久停在中途。
             if (existing.state != DownloadInfo.STATE_FINISH) return false
             runCatching {
-                DownloadManager.attachLocalDirname(
-                    item.gid,
-                    path.toString(),
-                    item.info.thumbKey,
-                    item.pages,
-                    item.info.title,
-                )
+                if (target.isInsideAppDownloadDir) {
+                    DownloadManager.normalizeAppDownloadEntry(
+                        gid = item.gid,
+                        dirname = target.dirname,
+                        thumbKey = item.info.thumbKey,
+                        pages = item.pages,
+                        title = item.info.title,
+                    )
+                } else {
+                    DownloadManager.attachLocalDirname(
+                        item.gid,
+                        target.dirname,
+                        item.info.thumbKey,
+                        item.pages,
+                        item.info.title,
+                    )
+                }
             }
             return false
         }
         return runCatching {
-            DownloadManager.importLocalDownload(item.info, path.toString(), item.pages, LOCAL_LABEL)
+            DownloadManager.importLocalDownload(item.info, target.dirname, item.pages, target.label)
         }.getOrDefault(false)
     }
 
@@ -185,11 +214,12 @@ object LocalGalleryScanner {
         }
     }.getOrDefault(false)
 
-    private fun discoverRoots(storage: Path): List<Path> {
+    private fun discoverRoots(storage: Path, configuredRoot: String? = null): List<Path> {
         val roots = linkedSetOf<Path>()
         fun add(path: Path) {
             if (path.isDirectory) roots.add(path)
         }
+        configuredRoot?.let { add(it.toPath()) }
 
         // Scan all of Download recursively so Chinese-named subfolders are included.
         add(storage / "Download")
@@ -451,4 +481,89 @@ object LocalGalleryScanner {
     private val ARCHIVE_EXTENSIONS = setOf("cbz", "zip")
     private const val MAX_SCAN_DEPTH = 5
     private const val MAX_THUMB_SOURCE_BYTES = 32L * 1024 * 1024
+}
+
+internal data class ImportTarget(
+    val dirname: String,
+    val label: String?,
+    val isInsideAppDownloadDir: Boolean,
+)
+
+/**
+ * 将用户设置的 `downloadLocation`（绝对路径或 Android SAF `content://` 文档树 URI）解析为磁盘真实路径，
+ * 以便判断扫描到的画廊是否属于用户当前配置的下载目录。
+ */
+internal fun resolveDownloadLocationPath(
+    rawLocation: String,
+    externalStorageRoot: String,
+): String? {
+    val cleanRaw = rawLocation.trim()
+    if (cleanRaw.isEmpty()) return null
+    if (cleanRaw.startsWith("/")) {
+        return cleanRaw.trimEnd('/').ifEmpty { "/" }
+    }
+    if (!cleanRaw.startsWith("content:")) return null
+
+    // 只解析外部存储提供方（com.android.externalstorage.documents）
+    if (!cleanRaw.contains("com.android.externalstorage.documents", ignoreCase = true)) {
+        return null
+    }
+    val withoutQuery = cleanRaw.substringBefore('?').substringBefore('#')
+    val encodedDocId = when {
+        "/document/" in withoutQuery -> withoutQuery.substringAfterLast("/document/")
+        "/tree/" in withoutQuery -> withoutQuery.substringAfterLast("/tree/")
+        else -> return null
+    }.takeIf { it.isNotBlank() } ?: return null
+
+    val decodedDocId = runCatching {
+        URLDecoder.decode(encodedDocId.replace("+", "%2B"), "UTF-8")
+    }.getOrNull() ?: return null
+
+    val volume = decodedDocId.substringBefore(':', "")
+    if (volume.isBlank()) return null
+    val relative = decodedDocId.substringAfter(':', "").trim('/')
+    val base = if (volume.equals("primary", ignoreCase = true)) {
+        externalStorageRoot.trimEnd('/')
+    } else {
+        "/storage/$volume"
+    }
+    return if (relative.isEmpty()) base else "$base/$relative"
+}
+
+/**
+ * 根据条目路径与当前应用下载目录判定导入目标：
+ * - 若位于当前下载目录内：不打“本地”标签；一级子目录还原为相对 `dirname`，避免与外部只读导入混淆；
+ * - 若位于外部目录：保留绝对路径并标记“本地”标签以保护磁盘原文件。
+ */
+internal fun resolveImportTarget(
+    entryCanonicalPath: String,
+    configuredDownloadRoot: String?,
+    appDownloadRoots: List<String>,
+    isArchive: Boolean,
+): ImportTarget {
+    val normalizedEntry = entryCanonicalPath.trimEnd('/').ifEmpty { "/" }
+    val normalizedConfigured = configuredDownloadRoot?.trimEnd('/')?.takeIf { it.isNotEmpty() }
+    val normalizedRoots = appDownloadRoots.map { it.trimEnd('/') }.filter { it.isNotEmpty() }
+
+    val insideAppDir = normalizedRoots.any { root ->
+        normalizedEntry == root || normalizedEntry.startsWith("$root/")
+    }
+    if (!insideAppDir) {
+        return ImportTarget(
+            dirname = normalizedEntry,
+            label = "本地",
+            isInsideAppDownloadDir = false,
+        )
+    }
+
+    val directRelative = if (!isArchive && normalizedConfigured != null && normalizedEntry.startsWith("$normalizedConfigured/")) {
+        normalizedEntry.removePrefix("$normalizedConfigured/").takeIf { it.isNotEmpty() && '/' !in it }
+    } else {
+        null
+    }
+    return ImportTarget(
+        dirname = directRelative ?: normalizedEntry,
+        label = null,
+        isInsideAppDownloadDir = true,
+    )
 }

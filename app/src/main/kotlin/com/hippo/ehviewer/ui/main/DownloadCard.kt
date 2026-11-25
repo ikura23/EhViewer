@@ -86,7 +86,7 @@ fun DownloadCard(
     Row {
         val thumb = remember {
             movableContentOf<DownloadInfo, Any> { item, refreshKey ->
-                if (item.isLocal) {
+                if (item.isLocal || item.thumbKey.isNullOrBlank() || '/' !in item.thumbKey!!) {
                     LocalDownloadThumb(
                         info = item,
                         thumbnailRefreshKey = refreshKey,
