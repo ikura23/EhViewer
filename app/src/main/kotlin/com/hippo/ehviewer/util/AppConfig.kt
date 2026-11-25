@@ -57,8 +57,11 @@ object AppConfig {
 
     private fun getDirInExternalAppDir(filename: String, create: Boolean = true) = externalAppDir?.run { File(this, filename).takeIf { if (create) it.ensureDirectory() else it.isDirectory } }
 
+    val defaultDownloadDirFile: File?
+        get() = externalAppDir?.let { File(it, DOWNLOAD) }
     val defaultDownloadDir: File?
         get() = getDirInExternalAppDir(DOWNLOAD, false)
+    fun ensureDefaultDownloadDir(): File? = getDirInExternalAppDir(DOWNLOAD, true)
     val externalTempPersistDir
         get() = getDirInExternalAppDir(TEMP)?.toOkioPath()
     val externalParseErrorDir: File?

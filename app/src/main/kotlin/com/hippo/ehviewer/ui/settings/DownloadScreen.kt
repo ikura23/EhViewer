@@ -106,14 +106,17 @@ fun AnimatedVisibilityScope.DownloadScreen(navigator: DestinationsNavigator) = S
                 treeUri?.run {
                     launchIO {
                         contextOf<Context>().contentResolver.runCatching {
-                            persistedUriPermissions.forEach {
-                                releasePersistableUriPermission(it.uri, URI_FLAGS)
-                            }
+                            // 先持久化并验证新目录可写，成功后再清理旧 URI 权限，避免选错或异常时把原有可用目录权限清空
                             takePersistableUriPermission(treeUri, URI_FLAGS)
                             val path = DocumentsContract.buildDocumentUriUsingTree(treeUri, DocumentsContract.getTreeDocumentId(treeUri)).toOkioPath()
                             check(path.isDirectory) { "$path is not a directory" }
                             keepNoMediaFileStatus(path) // Check if the directory is writable
                             downloadLocationState = path
+                            persistedUriPermissions.forEach {
+                                if (it.uri != treeUri) {
+                                    releasePersistableUriPermission(it.uri, URI_FLAGS)
+                                }
+                            }
                         }.onFailure {
                             logcat(it)
                             launchSnackbar(cannotGetDownloadLocation)
@@ -127,7 +130,8 @@ fun AnimatedVisibilityScope.DownloadScreen(navigator: DestinationsNavigator) = S
             ) {
                 launchIO {
                     val defaultDownloadDir = AppConfig.defaultDownloadDir
-                    if (defaultDownloadDir?.delete() == false) {
+                    val hasDefaultFiles = defaultDownloadDir?.takeIf { it.isDirectory && !it.list().isNullOrEmpty() } != null
+                    if (hasDefaultFiles) {
                         val path = defaultDownloadDir.toOkioPath()
                         awaitConfirmationOrCancel(
                             confirmText = R.string.pick_new_download_location,
@@ -144,7 +148,8 @@ fun AnimatedVisibilityScope.DownloadScreen(navigator: DestinationsNavigator) = S
                                             releasePersistableUriPermission(it.uri, URI_FLAGS)
                                         }
                                     }
-                                    downloadLocationState = path
+                                    val ensured = AppConfig.ensureDefaultDownloadDir()?.toOkioPath() ?: path
+                                    downloadLocationState = ensured
                                 }
                             },
                         ) {

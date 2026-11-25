@@ -179,12 +179,6 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         launchIO {
-            runCatching {
-                appContext.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                )
-            }
             if (!LocalGalleryScanner.hasAllFilesAccess()) {
                 scope.coroutineLaunch {
                     Toast.makeText(

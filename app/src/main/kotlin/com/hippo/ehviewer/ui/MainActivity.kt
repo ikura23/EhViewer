@@ -128,6 +128,7 @@ import com.hippo.ehviewer.client.parser.GalleryPageUrlParser
 import com.hippo.ehviewer.collectAsState
 import com.hippo.ehviewer.download.DownloadService
 import com.hippo.ehviewer.download.downloadLocation
+import com.hippo.ehviewer.download.ensureValidDownloadLocation
 import com.hippo.ehviewer.ui.destinations.DownloadScreenDestination
 import com.hippo.ehviewer.ui.destinations.DownloadsScreenDestination
 import com.hippo.ehviewer.ui.destinations.FavouritesScreenDestination
@@ -232,7 +233,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             suspend fun DialogState.checkDownloadLocation() {
-                val valid = withIOContext { downloadLocation.isDirectory }
+                val valid = withIOContext { ensureValidDownloadLocation() }
                 if (!valid) {
                     awaitConfirmationOrCancel(
                         confirmText = R.string.open_settings,

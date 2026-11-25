@@ -15,7 +15,9 @@
  */
 package com.hippo.ehviewer.download
 
+import android.content.ContentResolver
 import android.net.Uri
+import android.os.Environment
 import android.util.SparseLongArray
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisallowComposableCalls
@@ -38,6 +40,7 @@ import com.ehviewer.core.database.model.DownloadLabel
 import com.ehviewer.core.database.model.GalleryEntity
 import com.ehviewer.core.files.delete
 import com.ehviewer.core.files.find
+import com.ehviewer.core.files.isDirectory
 import com.ehviewer.core.files.isFile
 import com.ehviewer.core.files.toOkioPath
 import com.ehviewer.core.files.toUri
@@ -62,6 +65,7 @@ import com.hippo.ehviewer.spider.toSimpleTags
 import com.hippo.ehviewer.util.AppConfig
 import com.hippo.ehviewer.util.insertWith
 import com.hippo.ehviewer.util.runAssertingNotMainThread
+import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CoroutineScope
@@ -1253,7 +1257,7 @@ var downloadLocation: Path
                 encodedFragment(downloadFragment)
             }.build().toOkioPath()
         } else {
-            AppConfig.defaultDownloadDir?.toOkioPath() ?: "".toPath()
+            AppConfig.ensureDefaultDownloadDir()?.toOkioPath() ?: "".toPath()
         }
     }
     set(value) = with(value.toUri()) {
@@ -1265,6 +1269,37 @@ var downloadLocation: Path
             downloadFragment = encodedFragment
         }
     }
+
+/**
+ * 校验并尽力修复应用当前的下载目录配置：
+ * - 优先直接检测 `downloadLocation.isDirectory`；
+ * - 若未配置自定义目录或指向默认下载目录被意外删空，则自动重建默认下载目录并复检；
+ * - 若为 SAF `content://` 目录失效但应用已具备所有文件访问权限，尝试解析物理路径并平滑修复为可读写目录。
+ */
+fun ensureValidDownloadLocation(): Boolean {
+    val current = downloadLocation
+    if (current.isDirectory) return true
+
+    val defaultFilePath = AppConfig.defaultDownloadDirFile?.absolutePath
+    if (Settings.downloadScheme == null || (defaultFilePath != null && current.toString() == defaultFilePath)) {
+        AppConfig.ensureDefaultDownloadDir()
+        if (downloadLocation.isDirectory) return true
+    }
+
+    if (Settings.downloadScheme == ContentResolver.SCHEME_CONTENT && LocalGalleryScanner.hasAllFilesAccess()) {
+        val physicalPath = resolveDownloadLocationPath(
+            rawLocation = current.toString(),
+            externalStorageRoot = Environment.getExternalStorageDirectory().absolutePath,
+        )
+        val physicalDir = physicalPath?.let(::File)
+        if (physicalDir != null && physicalDir.isDirectory && physicalDir.canRead() && physicalDir.canWrite()) {
+            downloadLocation = physicalDir.toOkioPath()
+            return true
+        }
+    }
+
+    return false
+}
 
 /**
  * 凡以绝对路径（`/` 开头）登记的条目一律视为外部本地只读引用，与可变 UI 标签解耦：
