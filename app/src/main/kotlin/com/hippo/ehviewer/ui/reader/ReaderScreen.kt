@@ -36,6 +36,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -95,9 +96,11 @@ import kotlin.coroutines.resume
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.sample
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.Serializable
 import moe.tarsin.string
@@ -167,8 +170,10 @@ fun AnimatedVisibilityScope.ReaderScreen(args: ReaderScreenArgs, navigator: Dest
             is Either.Right -> {
                 val loader = result.value
                 val info = (args as? ReaderScreenArgs.Gallery)?.info
+                val isLocalDownloaded = args is ReaderScreenArgs.Archive ||
+                    info?.let { DownloadManager.getDownloadInfo(it.gid) != null } == true
                 key(loader) {
-                    ReaderScreen(loader, info)
+                    ReaderScreen(loader, info, isLocalDownloaded)
                 }
             }
         }
@@ -177,7 +182,7 @@ fun AnimatedVisibilityScope.ReaderScreen(args: ReaderScreenArgs, navigator: Dest
 
 @Composable
 context(activity: MainActivity, _: SnackbarHostState, _: DialogState, _: CoroutineScope, _: DestinationsNavigator)
-fun ReaderScreen(pageLoader: PageLoader, info: BaseGalleryInfo?) {
+fun ReaderScreen(pageLoader: PageLoader, info: BaseGalleryInfo?, isLocalDownloaded: Boolean = false) {
     LaunchedEffect(Unit) {
         val orientation = activity.requestedOrientation
         Settings.orientationMode.valueFlow()
@@ -202,6 +207,123 @@ fun ReaderScreen(pageLoader: PageLoader, info: BaseGalleryInfo?) {
             else -> mode
         }
     }
+    val animatedPlaybackAutoDetect by Settings.animatedPlayback.collectAsState()
+    val animatedPlaybackNeighbors by Settings.animatedPlaybackNeighbors.collectAsState()
+    val animatedPlaybackPreload by Settings.animatedPlaybackPreload.collectAsState()
+    val animatedPlaybackSpeed by Settings.animatedPlaybackSpeed.collectAsState()
+    val animatedTag = info?.simpleTags?.any { tag ->
+        tag.substringAfter(':').equals("animated", ignoreCase = true)
+    } == true
+    var animatedLoadingDialogVisible by remember(pageLoader) { mutableStateOf(false) }
+    var animatedLoadingDialogShown by remember(pageLoader) { mutableStateOf(false) }
+    var loadedAnimatedCount by remember(pageLoader) { mutableIntStateOf(0) }
+    // Decoded animation pages are large; keep the dialog window and playback window identical
+    // so the heap cannot be exhausted before the first frame even starts.
+    val animatedPreloadWindow = animatedPlaybackPreload.coerceIn(1, MAX_ANIMATED_PRELOAD)
+    var animatedLoadTarget by remember(pageLoader) {
+        mutableIntStateOf(minOf(pageLoader.size.coerceAtLeast(1), animatedPreloadWindow + 1))
+    }
+    DisposableEffect(pageLoader) {
+        val sessionToken = AnimatedPlaybackSession.attach()
+        onDispose { AnimatedPlaybackSession.detach(sessionToken) }
+    }
+    LaunchedEffect(pageLoader, animatedPlaybackAutoDetect) {
+        AnimatedPlaybackSession.autoActive = false
+        AnimatedPlaybackSession.allAnimated = false
+        if (!animatedPlaybackAutoDetect) {
+            pageLoader.extraPrefetchCount = 0
+            return@LaunchedEffect
+        }
+        if (animatedTag) {
+            pageLoader.extraPrefetchCount = animatedPreloadWindow
+            AnimatedPlaybackSession.allAnimated = true
+            AnimatedPlaybackSession.autoActive = true
+            return@LaunchedEffect
+        }
+        val size = pageLoader.size
+        if (size <= 0) return@LaunchedEffect
+        // 避免在主线程遍历磁盘检查扩展名。
+        val gifCount = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            (0 until size).count {
+                pageLoader.imageExtension(it)?.lowercase()?.endsWith("gif") == true
+            }
+        }
+        if (gifCount * 2 >= size) {
+            pageLoader.extraPrefetchCount = animatedPreloadWindow
+            AnimatedPlaybackSession.autoActive = true
+            return@LaunchedEffect
+        }
+        // 小窗口增量抽样，避免给普通静态画廊强拉过多页或在超时后破坏阅读缓存。
+        val sampleStart = (pageLoader.startPage - 1).coerceAtLeast(0)
+        val sampleEnd = (pageLoader.startPage + 5).coerceAtMost(size - 1)
+        val sampleTotal = (sampleEnd - sampleStart + 1).coerceAtLeast(1)
+        val observedAnimated = HashMap<Int, Boolean>(sampleTotal)
+        var requested = false
+        var waited = 0L
+        while (isActive && waited < 15_000L) {
+            if (!requested) {
+                pageLoader.requestRange(sampleStart, sampleEnd)
+                requested = true
+            }
+            for (i in sampleStart..sampleEnd) {
+                if (i in observedAnimated) continue
+                when (val status = pageLoader.pages[i].status) {
+                    is PageStatus.Ready -> observedAnimated[i] = status.image.isAnimated
+                    is PageStatus.Error, is PageStatus.Blocked -> observedAnimated[i] = false
+                    else -> Unit
+                }
+            }
+            val animCount = observedAnimated.values.count { it }
+            val nonAnimCount = observedAnimated.size - animCount
+            // 非动图已超过半数，立刻结束抽样，不干扰普通画廊阅读。
+            if (nonAnimCount * 2 > sampleTotal) break
+            // 已确认动图过半且抽样过半，激活自动动图播放。
+            if (observedAnimated.size >= minOf(sampleTotal, 4) && animCount * 2 >= observedAnimated.size) {
+                pageLoader.extraPrefetchCount = animatedPreloadWindow
+                AnimatedPlaybackSession.autoActive = true
+                return@LaunchedEffect
+            }
+            if (observedAnimated.size >= sampleTotal) break
+            delay(200)
+            waited += 200
+        }
+        AnimatedPlaybackSession.autoActive = false
+    }
+    val animatedPlaybackActive = AnimatedPlaybackSession.active
+    LaunchedEffect(animatedPlaybackActive, isLocalDownloaded, pageLoader) {
+        if (!animatedPlaybackActive) {
+            animatedLoadingDialogVisible = false
+            return@LaunchedEffect
+        }
+        if (!animatedLoadingDialogShown && isLocalDownloaded) {
+            animatedLoadingDialogVisible = true
+            animatedLoadingDialogShown = true
+        }
+    }
+    LaunchedEffect(pageLoader, animatedLoadingDialogVisible, animatedPlaybackActive, animatedPreloadWindow) {
+        if (!animatedLoadingDialogVisible || !animatedPlaybackActive || pageLoader.size <= 0) return@LaunchedEffect
+        val start = pageLoader.startPage.coerceIn(0, pageLoader.size - 1)
+        val end = minOf(pageLoader.size - 1, start + animatedPreloadWindow)
+        val actualTarget = (end - start + 1).coerceAtLeast(1)
+        animatedLoadTarget = actualTarget
+        pageLoader.requestRange(start, end)
+        var waited = 0L
+        while (isActive && waited < 20_000L) {
+            val done = (start..end).count {
+                when (pageLoader.pages[it].status) {
+                    is PageStatus.Ready, is PageStatus.Error, is PageStatus.Blocked -> true
+                    else -> false
+                }
+            }
+            loadedAnimatedCount = done.coerceAtMost(actualTarget)
+            if (done >= actualTarget && AnimatedPlaybackSession.playbackStarted) {
+                return@LaunchedEffect
+            }
+            delay(200)
+            waited += 200
+        }
+        animatedLoadingDialogVisible = false
+    }
     val volumeKeysEnabled by Settings.readWithVolumeKeys.collectAsState()
     val volumeKeysInverted by Settings.readWithVolumeKeysInverted.collectAsState()
     val fullscreen by Settings.fullscreen.collectAsState()
@@ -219,14 +341,32 @@ fun ReaderScreen(pageLoader: PageLoader, info: BaseGalleryInfo?) {
     val pagerState = rememberPagerState(pageLoader.startPage) { pageLoader.size }
     val sync = rememberSliderPagerDoubleSyncState(lazyListState, pagerState, pageLoader)
     var appbarVisible by remember { mutableStateOf(false) }
-    val isWebtoon by rememberUpdatedState(ReadingModeType.isWebtoon(readingMode))
+    val isWebtoon by rememberUpdatedState(
+        animatedPlaybackActive || ReadingModeType.isWebtoon(readingMode),
+    )
     val focusRequester = remember { FocusRequester() }
     Box(
         Modifier.keyEventHandler(
             volumeKeysEnabled = { volumeKeysEnabled && !appbarVisible },
             volumeKeysInverted = { volumeKeysInverted },
-            movePrevious = { launch { if (isWebtoon) lazyListState.scrollUp() else pagerState.moveToPrevious() } },
-            moveNext = { launch { if (isWebtoon) lazyListState.scrollDown() else pagerState.moveToNext() } },
+            movePrevious = {
+                launch {
+                    if (isWebtoon) {
+                        lazyListState.scrollWebtoonPage(false, pageLoader, Settings.webtoonSidePadding.value)
+                    } else {
+                        pagerState.moveToPrevious()
+                    }
+                }
+            },
+            moveNext = {
+                launch {
+                    if (isWebtoon) {
+                        lazyListState.scrollWebtoonPage(true, pageLoader, Settings.webtoonSidePadding.value)
+                    } else {
+                        pagerState.moveToNext()
+                    }
+                }
+            },
         ).focusRequester(focusRequester).focusable().thenIf(keepScreenOn) { keepScreenOn() },
     ) {
         LaunchedEffect(Unit) {
@@ -284,30 +424,52 @@ fun ReaderScreen(pageLoader: PageLoader, info: BaseGalleryInfo?) {
             } else {
                 WindowInsets.systemBars
             }
-            GalleryPager(
-                type = readingMode,
-                pagerState = pagerState,
-                lazyListState = lazyListState,
-                pageLoader = pageLoader,
-                showNavigationOverlay = showNavigationOverlay,
-                onNavigationModeChange = { showNavigationOverlay = true },
-                onSelectPage = onSelectPage,
-                onMenuRegionClick = { appbarVisible = !appbarVisible },
-                modifier = Modifier.background(bgColor).pointerInput(sync) {
-                    awaitEachGesture {
-                        waitForUpOrCancellation()
-                        sync.reset()
-                        showNavigationOverlay = false
-                    }
-                }.fillMaxSize().windowInsetsPadding(insets),
-            )
-            AutoPageTurnEffect(
-                isWebtoon = isWebtoon,
-                appbarVisible = appbarVisible,
-                pagerState = pagerState,
-                lazyListState = lazyListState,
-                pageLoader = pageLoader,
-            )
+            if (animatedPlaybackActive) {
+                AnimatedPlaybackViewer(
+                    lazyListState = lazyListState,
+                    pageLoader = pageLoader,
+                    neighbors = animatedPlaybackNeighbors,
+                    preloadCount = animatedPlaybackPreload,
+                    speed = animatedPlaybackSpeed,
+                    allAnimated = AnimatedPlaybackSession.allAnimated,
+                    appbarVisible = appbarVisible,
+                    onMenu = { appbarVisible = !appbarVisible },
+                    modifier = Modifier.background(bgColor).fillMaxSize().windowInsetsPadding(insets),
+                )
+            } else {
+                GalleryPager(
+                    type = readingMode,
+                    pagerState = pagerState,
+                    lazyListState = lazyListState,
+                    pageLoader = pageLoader,
+                    showNavigationOverlay = showNavigationOverlay,
+                    onNavigationModeChange = { showNavigationOverlay = true },
+                    onSelectPage = onSelectPage,
+                    onMenuRegionClick = { appbarVisible = !appbarVisible },
+                    modifier = Modifier.background(bgColor).pointerInput(sync) {
+                        awaitEachGesture {
+                            waitForUpOrCancellation()
+                            sync.reset()
+                            showNavigationOverlay = false
+                        }
+                    }.fillMaxSize().windowInsetsPadding(insets),
+                )
+                AutoPageTurnEffect(
+                    isWebtoon = isWebtoon,
+                    appbarVisible = appbarVisible,
+                    pagerState = pagerState,
+                    lazyListState = lazyListState,
+                    pageLoader = pageLoader,
+                )
+            }
+            if (animatedLoadingDialogVisible && animatedPlaybackActive) {
+                AnimatedLoadingDialog(
+                    loaded = loadedAnimatedCount,
+                    target = animatedLoadTarget,
+                    readyToDismiss = AnimatedPlaybackSession.playbackStarted,
+                    onClose = { animatedLoadingDialogVisible = false },
+                )
+            }
         }
         val brightness by Settings.customBrightness.collectAsState()
         val brightnessValue by Settings.customBrightnessValue.collectAsState()

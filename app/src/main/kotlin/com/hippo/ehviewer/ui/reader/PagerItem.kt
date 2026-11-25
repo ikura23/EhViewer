@@ -1,6 +1,10 @@
 package com.hippo.ehviewer.ui.reader
 
 import android.graphics.drawable.Animatable
+import android.graphics.drawable.Animatable2
+import android.graphics.drawable.AnimatedImageDrawable
+import android.graphics.drawable.Drawable
+import android.os.Build
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
@@ -26,7 +30,9 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,6 +55,8 @@ import com.ehviewer.core.ui.util.thenIf
 import com.ehviewer.core.util.unreachable
 import com.google.accompanist.drawablepainter.DrawablePainter
 import com.hippo.ehviewer.Settings
+import com.hippo.ehviewer.coil.AnimatedWebPDrawable
+import com.hippo.ehviewer.coil.SpeedGifDrawable
 import com.hippo.ehviewer.collectAsState
 import com.hippo.ehviewer.gallery.Page
 import com.hippo.ehviewer.gallery.PageLoader
@@ -67,6 +75,13 @@ fun PagerItem(
     contentScale: ContentScale,
     modifier: Modifier = Modifier,
     contentModifier: Modifier = Modifier,
+    playbackActive: Boolean = false,
+    playbackRunning: Boolean = true,
+    playbackStay: Boolean = false,
+    playbackKey: Int = 0,
+    playbackSpeed: Float = 1f,
+    onAnimationStart: (() -> Unit)? = null,
+    onAnimationEnd: (() -> Unit)? = null,
 ) {
     LaunchedEffect(Unit) {
         pageLoader.request(page.index)
@@ -124,15 +139,125 @@ fun PagerItem(
             }
             painter?.let { painter ->
                 val drawable = (painter as? DrawablePainter)?.drawable
+                val currentOnAnimationEnd by rememberUpdatedState(onAnimationEnd)
+                val currentOnAnimationStart by rememberUpdatedState(onAnimationStart)
+                // 支持 Android 9+ AnimatedImageDrawable 及 Android 8 MovieDrawable，并在 IO 线程异步解码 Movie。
+                val isGifDrawable = drawable is Animatable && drawable !is AnimatedWebPDrawable && drawable !is SpeedGifDrawable
+                val speedGif by produceState<SpeedGifDrawable?>(null, image, playbackActive, drawable) {
+                    value = if (playbackActive && isGifDrawable) {
+                        image.createGifMovie()?.let(::SpeedGifDrawable)
+                    } else {
+                        null
+                    }
+                }
+                val displayDrawable = speedGif ?: drawable
+                val displayPainter = remember(speedGif, painter) {
+                    speedGif?.let { DrawablePainter(it) } ?: painter
+                }
+                // Apply a speed change live instead of restarting the animation sequence.
+                LaunchedEffect(displayDrawable, playbackSpeed) {
+                    when (displayDrawable) {
+                        is AnimatedWebPDrawable -> displayDrawable.speed = playbackSpeed
+                        is SpeedGifDrawable -> displayDrawable.speed = playbackSpeed
+                        else -> Unit
+                    }
+                }
+                LaunchedEffect(displayDrawable, playbackActive, playbackRunning, playbackStay, playbackKey) {
+                    val animatable = displayDrawable as? Animatable ?: return@LaunchedEffect
+                    if (!playbackActive) {
+                        // 从动图模式切回普通阅读器时，恢复默认循环配置，防止缓存复用的动图只播一遍就卡死。
+                        when {
+                            Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && displayDrawable is AnimatedImageDrawable -> {
+                                displayDrawable.repeatCount = AnimatedImageDrawable.REPEAT_INFINITE
+                            }
+                            displayDrawable is AnimatedWebPDrawable -> {
+                                displayDrawable.playOnce = false
+                                displayDrawable.loopForever = false
+                                displayDrawable.onAnimationEnd = null
+                            }
+                        }
+                        return@LaunchedEffect
+                    }
+                    if (!playbackRunning) {
+                        animatable.stop()
+                        return@LaunchedEffect
+                    }
+                    when {
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && displayDrawable is AnimatedImageDrawable -> {
+                            displayDrawable.repeatCount =
+                                if (playbackStay) AnimatedImageDrawable.REPEAT_INFINITE else 0
+                            var ended = false
+                            val callback = object : Animatable2.AnimationCallback() {
+                                override fun onAnimationEnd(drawable: Drawable) {
+                                    if (!ended) {
+                                        ended = true
+                                        currentOnAnimationEnd?.invoke()
+                                    }
+                                }
+                            }
+                            displayDrawable.registerAnimationCallback(callback)
+                            displayDrawable.stop()
+                            displayDrawable.start()
+                            currentOnAnimationStart?.invoke()
+                            try {
+                                awaitCancellation()
+                            } finally {
+                                displayDrawable.unregisterAnimationCallback(callback)
+                                displayDrawable.repeatCount = AnimatedImageDrawable.REPEAT_INFINITE
+                                displayDrawable.stop()
+                            }
+                        }
+                        displayDrawable is AnimatedWebPDrawable -> {
+                            displayDrawable.playOnce = !playbackStay
+                            displayDrawable.loopForever = playbackStay
+                            displayDrawable.onAnimationEnd = {
+                                currentOnAnimationEnd?.invoke()
+                            }
+                            displayDrawable.restart()
+                            currentOnAnimationStart?.invoke()
+                            try {
+                                awaitCancellation()
+                            } finally {
+                                displayDrawable.onAnimationEnd = null
+                                displayDrawable.playOnce = false
+                                displayDrawable.loopForever = false
+                                displayDrawable.stop()
+                            }
+                        }
+                        displayDrawable is SpeedGifDrawable -> {
+                            displayDrawable.looping = playbackStay
+                            displayDrawable.onAnimationEnd = {
+                                currentOnAnimationEnd?.invoke()
+                            }
+                            displayDrawable.restart()
+                            currentOnAnimationStart?.invoke()
+                            try {
+                                awaitCancellation()
+                            } finally {
+                                displayDrawable.onAnimationEnd = null
+                                displayDrawable.stop()
+                            }
+                        }
+                        else -> {
+                            animatable.start()
+                            currentOnAnimationStart?.invoke()
+                            try {
+                                awaitCancellation()
+                            } finally {
+                                animatable.stop()
+                            }
+                        }
+                    }
+                }
                 val grayScale by Settings.grayScale.collectAsState()
                 val invert by Settings.invertedColors.collectAsState()
                 Image(
                     // DrawablePainter <: RememberObserver
-                    painter = remember(painter) { painter },
+                    painter = remember(displayPainter) { displayPainter },
                     contentDescription = null,
-                    modifier = Modifier.thenIf(drawable is Animatable) {
+                    modifier = Modifier.thenIf(displayDrawable is Animatable) {
                         onVisibilityChanged(minDurationMs = 33, minFractionVisible = 0.5f) {
-                            drawable!!.setVisible(it, false)
+                            displayDrawable!!.setVisible(it, false)
                         }
                     }.then(contentModifier).fillMaxSize(),
                     contentScale = contentScale,

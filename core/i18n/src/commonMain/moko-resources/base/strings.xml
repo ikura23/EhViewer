@@ -545,6 +545,15 @@
     <string name="page_edge_alignment_top">Align to top</string>
     <string name="page_edge_alignment_center">Always center</string>
     <string name="page_edge_alignment_bottom">Align to bottom</string>
+    <string name="pref_animated_playback">Animated playback mode (current gallery)</string>
+    <string name="pref_animated_playback_auto">Auto-detect (50%+ animated)</string>
+    <string name="pref_animated_playback_neighbors">Show previous/next pages</string>
+    <string name="pref_animated_playback_preload">Animated image preload count</string>
+    <string name="animated_playback_preload_pages">%1$d pages</string>
+    <string name="pref_animated_playback_speed">Playback speed</string>
+    <string name="animated_loading_title">Loading animated images</string>
+    <string name="action_confirm">OK</string>
+    <string name="action_cancel">Cancel</string>
     <string name="pref_auto_page_turn">Auto page turn</string>
     <string name="pref_auto_page_turn_interval">Auto page turn interval</string>
     <string name="auto_page_turn_interval_seconds">%1$d seconds</string>

@@ -14,6 +14,7 @@ import androidx.core.graphics.createBitmap
 import com.ehviewer.core.util.isAtLeastQ
 import com.ehviewer.core.util.logcat
 import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -69,6 +70,24 @@ class AnimatedWebPDrawable(private val source: ByteBuffer) : Drawable(), Animata
     private var decodeJob: Job? = null
     private var loopsCompleted = 0
     private var timeToShowNextFrame = 0L
+    private var endNotified = false
+    private val disposed = AtomicBoolean(false)
+
+    var playOnce = false
+    var loopForever = false
+    var speed = 1f
+        set(value) {
+            val updated = if (value.isFinite()) value.coerceIn(0.1f, 5f) else 1f
+            val previous = field
+            if (updated == previous) return
+            val now = SystemClock.uptimeMillis()
+            val remaining = (timeToShowNextFrame - now).coerceAtLeast(0)
+            timeToShowNextFrame = now + (remaining * previous / updated).toLong()
+            field = updated
+            unscheduleSelf(runnable)
+            if (decodeJob?.isCompleted == true) scheduleSelf(runnable, timeToShowNextFrame)
+        }
+    var onAnimationEnd: (() -> Unit)? = null
     private var currentFrame: Frame
     private var nextFrame: Frame
 
@@ -92,11 +111,18 @@ class AnimatedWebPDrawable(private val source: ByteBuffer) : Drawable(), Animata
     override fun getIntrinsicHeight() = height
 
     private val runnable = Runnable {
-        timeToShowNextFrame = SystemClock.uptimeMillis() + nextFrame.timestamp - currentFrame.timestamp
         invalidateSelf()
     }
 
+    private fun scheduleNextFrame() {
+        val frameDuration = (nextFrame.timestamp - currentFrame.timestamp).coerceAtLeast(0)
+        timeToShowNextFrame = SystemClock.uptimeMillis() +
+            (frameDuration / speed.coerceAtLeast(0.05f)).toLong()
+        scheduleSelf(runnable, timeToShowNextFrame)
+    }
+
     private fun decodeNextFrame(reset: Boolean) = decodeScope.launch {
+        if (disposed.get()) return@launch
         val timestamp = nextFrame.decode(decoder, reset)
         ensureActive()
         check(timestamp != 0) {
@@ -110,11 +136,13 @@ class AnimatedWebPDrawable(private val source: ByteBuffer) : Drawable(), Animata
         nextFrame.bitmap.prepareToDraw()
     }.apply {
         invokeOnCompletion { cause ->
+            if (disposed.get()) return@invokeOnCompletion
             when (cause) {
                 null -> if (reset) {
+                    timeToShowNextFrame = SystemClock.uptimeMillis()
                     runnable.run()
                 } else {
-                    scheduleSelf(runnable, timeToShowNextFrame)
+                    scheduleNextFrame()
                 }
                 !is CancellationException -> logcat(cause)
             }
@@ -122,15 +150,29 @@ class AnimatedWebPDrawable(private val source: ByteBuffer) : Drawable(), Animata
     }
 
     override fun draw(canvas: Canvas) {
-        if (decodeJob?.isCompleted == true && isVisible) {
-            decodeJob = if (loopCount == 0 || loopsCompleted < loopCount) {
+        if (disposed.get()) return
+        if (decodeJob?.isCompleted == true && isVisible && SystemClock.uptimeMillis() >= timeToShowNextFrame) {
+            val maxLoops = when {
+                playOnce -> 1
+                loopForever -> 0
+                else -> loopCount
+            }
+            decodeJob = if (maxLoops == 0 || loopsCompleted < maxLoops) {
                 currentFrame = nextFrame.also { nextFrame = currentFrame }
                 decodeNextFrame(false)
             } else {
+                notifyAnimationEnd()
                 null
             }
         }
         canvas.drawBitmap(currentFrame.bitmap, null, bounds, paint)
+    }
+
+    private fun notifyAnimationEnd() {
+        if (!endNotified) {
+            endNotified = true
+            onAnimationEnd?.invoke()
+        }
     }
 
     @Deprecated("Deprecated in Java")
@@ -157,9 +199,17 @@ class AnimatedWebPDrawable(private val source: ByteBuffer) : Drawable(), Animata
     override fun isRunning() = decodeJob != null
 
     override fun start() {
-        if (decodeJob == null) {
+        if (!disposed.get() && decodeJob == null) {
+            endNotified = false
+            loopsCompleted = 0
             decodeJob = decodeNextFrame(true)
         }
+    }
+
+    /** 重置循环计数与结束标志并从首帧重新起播，避免预组合后台播完导致秒跳页。 */
+    fun restart() {
+        stop()
+        start()
     }
 
     override fun stop() {
@@ -169,6 +219,8 @@ class AnimatedWebPDrawable(private val source: ByteBuffer) : Drawable(), Animata
     }
 
     override fun close() {
+        if (!disposed.compareAndSet(false, true)) return
+        stop()
         runBlocking { decodeScope.coroutineContext.job.cancelAndJoin() }
         nativeDestroyDecoder(decoder)
         currentFrame.close()

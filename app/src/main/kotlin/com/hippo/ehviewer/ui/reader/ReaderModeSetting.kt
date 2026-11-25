@@ -49,6 +49,8 @@ fun ReaderModeSetting(isWebtoon: Boolean) = Column(modifier = Modifier.verticalS
     }
     Spacer(modifier = Modifier.size(16.dp))
     PageEdgeAlignmentSetting()
+    Spacer(modifier = Modifier.size(16.dp))
+    AnimatedPlaybackSetting()
 }
 
 @Composable

@@ -526,6 +526,15 @@
     <string name="page_edge_alignment_top">向上对齐（顶部）</string>
     <string name="page_edge_alignment_center">始终居中（屏幕正中）</string>
     <string name="page_edge_alignment_bottom">向下对齐（底部）</string>
+    <string name="pref_animated_playback">动图播放模式（当前图集）</string>
+    <string name="pref_animated_playback_auto">自动识别（≥50% 动图）</string>
+    <string name="pref_animated_playback_neighbors">显示上下相邻页</string>
+    <string name="pref_animated_playback_preload">动图预加载张数</string>
+    <string name="animated_playback_preload_pages">%1$d 张</string>
+    <string name="pref_animated_playback_speed">动图播放倍率</string>
+    <string name="animated_loading_title">正在加载动图</string>
+    <string name="action_confirm">确定</string>
+    <string name="action_cancel">取消</string>
     <string name="pref_auto_page_turn">自动翻页</string>
     <string name="pref_auto_page_turn_interval">自动翻页间隔</string>
     <string name="auto_page_turn_interval_seconds">%1$d 秒</string>

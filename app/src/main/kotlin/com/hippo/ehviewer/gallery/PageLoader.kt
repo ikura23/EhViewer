@@ -15,6 +15,7 @@ import com.hippo.ehviewer.util.FileUtils
 import com.hippo.ehviewer.util.OSUtils
 import com.hippo.ehviewer.util.detectAds
 import com.hippo.ehviewer.util.displayString
+import java.util.WeakHashMap
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.read
@@ -36,15 +37,30 @@ private val progressScope = CoroutineScope(Dispatchers.IO)
 private const val MAX_CACHE_SIZE = 512 * 1024 * 1024
 private const val MIN_CACHE_SIZE = 256 * 1024 * 1024
 
-abstract class PageLoader(val scope: CoroutineScope, val info: GalleryInfo?, startPage: Int, val size: Int, val hasAds: Boolean = false) : AutoCloseable {
+private val activeLoaders = WeakHashMap<PageLoader, Unit>()
+
+internal fun trimReaderMemory() {
+    val loaders = synchronized(activeLoaders) { activeLoaders.keys.toList() }
+    loaders.forEach { it.trimIdleImages() }
+}
+
+abstract class PageLoader(
+    val scope: CoroutineScope,
+    val info: GalleryInfo?,
+    startPage: Int,
+    val size: Int,
+    val hasAds: Boolean = false,
+    cacheSize: Int? = null,
+    decodeParallelism: Int = 4,
+) : AutoCloseable {
     var startPage = startPage.coerceIn(0, size - 1)
 
     private val jobs = mutableIntObjectMapOf<Job>()
     private val mutex = NamedMutex<Int>()
-    private val semaphore = Semaphore(4)
+    private val semaphore = Semaphore(decodeParallelism)
 
     private val cache = SieveCache<Int, Image>(
-        maxSize = if (isAtLeastO) {
+        maxSize = cacheSize ?: if (isAtLeastO) {
             (OSUtils.totalMemory / 8).toInt().coerceIn(MIN_CACHE_SIZE, MAX_CACHE_SIZE)
         } else {
             (OSUtils.appMaxMemory / 3 * 2).toInt()
@@ -69,16 +85,36 @@ abstract class PageLoader(val scope: CoroutineScope, val info: GalleryInfo?, sta
 
     val pages = (0 until size).map { Page(it) }
 
-    private val prefetchPageCount = Settings.preloadImage.value
+    var extraPrefetchCount = 0
+
+    private val prefetchPageCount
+        get() = maxOf(Settings.preloadImage.value, extraPrefetchCount)
 
     fun restart() {
+        setHotRange(null)
         lock.write { cache.evictAll() }
         pages.forEach(Page::reset)
     }
 
     private val prevIndex = AtomicInt(-1)
 
+    init {
+        synchronized(activeLoaders) { activeLoaders[this] = Unit }
+    }
+
+    internal fun trimIdleImages() = lock.write {
+        val current = prevIndex.load()
+        val candidates = mutableListOf<Int>()
+        cache.forEach { index, image ->
+            if (index != current && image.refcnt.load() == 1) candidates += index
+        }
+        candidates.forEach { cache.remove(it) }
+    }
+
     fun retryPage(index: Int, orgImg: Boolean = false) {
+        synchronized(this) {
+            hotImages.remove(index)?.unpin()
+        }
         notifyPageWait(index)
         lock.write { cache.remove(index) }
         onRequest(index, true, orgImg)
@@ -101,9 +137,66 @@ abstract class PageLoader(val scope: CoroutineScope, val info: GalleryInfo?, sta
         }
     }
 
+    @Synchronized
     fun notifyPageSucceed(index: Int, image: Image, replaceCache: Boolean = true) {
+        if (hotRange?.contains(index) == true) pinHot(index, image)
         if (replaceCache) lock.write { cache[index] = image }
+        // 避免单图超过 cacheSize 被立刻淘汰并回收后，仍将死图发布给界面导致永久白屏。
+        if (image.refcnt.load() <= 0) {
+            notifyPageFailed(index, null)
+            return
+        }
         pages[index].statusFlow.update { if (image.hasQrCode) PageStatus.Blocked(image) else PageStatus.Ready(image) }
+    }
+
+    private var hotRange: IntRange? = null
+
+    private val hotImages = HashMap<Int, Image>()
+
+    private fun peekHot(index: Int): Image? = synchronized(this) { hotImages[index] }
+
+    private fun pinHot(index: Int, image: Image) {
+        val existing = hotImages[index]
+        if (existing === image) return
+        if (existing != null) {
+            if (existing.unpin() && (pages[index].status as? PageStatus.Ready)?.image === existing) {
+                pages[index].reset()
+            }
+        }
+        if (image.pin()) hotImages[index] = image else hotImages.remove(index)
+    }
+
+    /**
+     * Pin the pages that are about to be displayed so cache eviction can never drop them
+     * between decode and display. That eviction is what caused the visible loading blink
+     * when the next animation was handed over.
+     */
+    @Synchronized
+    fun setHotRange(range: IntRange?) {
+        hotRange = range
+        if (range == null) {
+            hotImages.forEach { (index, image) ->
+                if (image.unpin() && (pages[index].status as? PageStatus.Ready)?.image === image) {
+                    pages[index].reset()
+                }
+            }
+            hotImages.clear()
+            return
+        }
+        val iterator = hotImages.entries.iterator()
+        while (iterator.hasNext()) {
+            val (index, image) = iterator.next()
+            if (index in range) continue
+            iterator.remove()
+            if (image.unpin() && (pages[index].status as? PageStatus.Ready)?.image === image) {
+                pages[index].reset()
+            }
+        }
+        for (index in range) {
+            if (hotImages.containsKey(index)) continue
+            val image = lock.read { cache[index] } ?: continue
+            if (image.pin()) hotImages[index] = image
+        }
     }
 
     fun notifyPageFailed(index: Int, error: String?) {
@@ -111,6 +204,8 @@ abstract class PageLoader(val scope: CoroutineScope, val info: GalleryInfo?, sta
     }
 
     override fun close() {
+        synchronized(activeLoaders) { activeLoaders.remove(this) }
+        setHotRange(null)
         lock.write { cache.evictAll() }
         info?.run {
             progressScope.launch {
@@ -123,6 +218,8 @@ abstract class PageLoader(val scope: CoroutineScope, val info: GalleryInfo?, sta
 
     protected abstract fun getImageExtension(index: Int): String?
 
+    fun imageExtension(index: Int): String? = getImageExtension(index)
+
     fun getImageFilename(index: Int): String? = getImageExtension(index)?.let {
         FileUtils.sanitizeFilename("$title - ${index + 1}.${it.lowercase()}")
     }
@@ -134,7 +231,9 @@ abstract class PageLoader(val scope: CoroutineScope, val info: GalleryInfo?, sta
             index - 1 downTo (index - prefetchPageCount).coerceAtLeast(0)
         }
         prevIndex.store(index)
-        val image = lock.read { cache[index] }
+        // A pinned hot page stays alive even when the size-bounded cache drops its entry;
+        // resolving it here prevents a needless re-decode and the loading blink that follows.
+        val image = peekHot(index) ?: lock.read { cache[index] }
         if (image != null) {
             notifyPageSucceed(index, image, false)
         } else {
@@ -155,7 +254,26 @@ abstract class PageLoader(val scope: CoroutineScope, val info: GalleryInfo?, sta
     }
 
     fun cancelRequest(index: Int) {
-        jobs[index]?.cancel()
+        synchronized(jobs) { jobs.remove(index) }?.cancel()
+    }
+
+    /** Keep only the current page, its forward preload window, and one back page in memory. */
+    fun trimToWindow(current: Int, forwardCount: Int) {
+        val first = (current - 1).coerceAtLeast(0)
+        val last = (current + forwardCount).coerceAtMost(size - 1)
+        for (index in 0 until size) {
+            if (index in first..last) continue
+            cancelRequest(index)
+            lock.write { cache.remove(index) }
+            if (pages[index].status !is PageStatus.Queued) pages[index].reset()
+        }
+    }
+
+    fun requestRange(start: Int, end: Int) {
+        if (start > end) return
+        for (index in start..end) {
+            request(index)
+        }
     }
 
     abstract fun save(index: Int, file: Path): Boolean
@@ -176,6 +294,8 @@ abstract class PageLoader(val scope: CoroutineScope, val info: GalleryInfo?, sta
                     } else {
                         notifyPageFailed(index, e.displayString())
                     }
+                } finally {
+                    synchronized(jobs) { jobs.remove(index) }
                 }
             }
         }

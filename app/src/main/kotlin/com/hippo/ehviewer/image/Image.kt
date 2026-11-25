@@ -18,6 +18,8 @@
 package com.hippo.ehviewer.image
 
 import android.graphics.Bitmap
+import android.graphics.Movie
+import android.graphics.drawable.Animatable
 import android.hardware.HardwareBuffer
 import androidx.compose.ui.unit.IntSize
 import arrow.core.Either
@@ -68,6 +70,37 @@ class Image private constructor(image: CoilImage, private val src: ImageSource) 
     fun unpin() = (refcnt.decrementAndFetch() == 0).also { if (it) recycle() }
 
     val intrinsicSize = with(image) { IntSize(width, height) }
+    val isAnimated: Boolean
+        get() = (innerImage as? DrawableImage)?.drawable is Animatable
+
+    @Suppress("DEPRECATION")
+    suspend fun createGifMovie(): Movie? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        if (!pin()) return@withContext null
+        try {
+            val movie = runCatching {
+                when (val source = src) {
+                    is ByteBufferSource -> {
+                        val buffer = source.source.duplicate().apply { rewind() }
+                        val bytes = ByteArray(buffer.remaining())
+                        buffer.get(bytes)
+                        Movie.decodeByteArray(bytes, 0, bytes.size)
+                    }
+                    is PathSource -> {
+                        android.os.ParcelFileDescriptor.AutoCloseInputStream(
+                            source.source.openFileDescriptor("r"),
+                        ).use { Movie.decodeStream(it) }
+                    }
+                }
+            }.getOrNull()
+            // 仅当存在合法正时长时启用 Movie 倍速播放，避免 0-delay 单帧 GIF 被 1ms 秒跳过。
+            movie?.takeIf { it.duration() > 0 }
+        } catch (_: OutOfMemoryError) {
+            null
+        } finally {
+            unpin()
+        }
+    }
+
     val allocationSize = image.size
     val hasQrCode = when (image) {
         is BitmapImageWithExtraInfo -> image.hasQrCode
