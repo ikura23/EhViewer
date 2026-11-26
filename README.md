@@ -1,66 +1,108 @@
-# EhViewer（自用增强公开版）
+<p align="right">
+  <strong>English</strong>
+  <span> | </span>
+  <a href="/docs/README/zh-cn.md">
+  简体中文
+  </a>
+  <span> | </span>
+  <a href="/docs/README/zh-tw.md">
+  正體中文
+  </a>
+  <span> | </span>
+  <a href="/docs/README/ja.md">
+  日本語
+  </a>
+</p>
 
-本项目基于 [Codeberg 原彩 E 主线 (EhViewer/EhViewer)](https://codeberg.org/EhViewer/EhViewer) 二次开发，保留原工程纯净架构，并在其上移植了日常阅读与本地管理相关的自用增强功能。
+<h1 align="center">
+  <img src="https://github.com/FooIbar/EhViewer-art/blob/master/launcher_icon-web.svg" width="200" alt="EhViewer">
+  <br>EhViewer<br>
+</h1>
 
-## 核心说明
+<p align="center">
+  <a href="https://github.com/ikura23/EhViewer/actions/workflows/build-release.yml">
+    <img src="https://github.com/ikura23/EhViewer/actions/workflows/build-release.yml/badge.svg" alt="Github Actions">
+  </a>
+  <a href="/LICENSE">
+    <img src="https://img.shields.io/github/license/ikura23/EhViewer" alt="LICENSE">
+  </a>
+  <a href="https://github.com/ikura23/EhViewer/releases">
+    <img src="https://img.shields.io/github/v/release/ikura23/EhViewer" alt="Release">
+  </a>
+  <a href="https://github.com/ikura23/EhViewer/issues">
+    <img src="https://img.shields.io/github/issues/ikura23/EhViewer" alt="Issues">
+  </a>
+</p>
 
-- **独立共存包名**：应用包名为 `com.ys.ehviewer`，可与原版及其他分支版本同时安装在同一台设备上，应用数据相互独立、互不覆盖。
-- **开源协议与上游致谢**：严格遵循 **GPL-3.0** 开源协议分发源码。感谢原主线及上游社区所有贡献者的长期维护与基础架构工作。
-- **维护声明**：本仓库功能为个人自用需求驱动，包含 AI 辅助开发与重构；不承诺固定更新节奏、长期技术支持或全机型适配，随缘更新，欢迎按 GPL-3.0 协议自行 Fork 定制。
+<div align="center">
+  <h3>
+    <a href="#description">
+    Description
+    </a>
+    <span> | </span>
+    <a href="#download">
+    Download
+    </a>
+    <span> | </span>
+    <a href="#screenshot">
+    Screenshot
+    </a>
+    <span> | </span>
+    <a href="#thanks">
+    Thanks
+    </a>
+    <span> | </span>
+    <a href="#license">
+    License
+    </a>
+  </h3>
+</div>
 
-## 新增与增强功能
+# Description
 
-1. **阅读器边缘对齐、始终居中与自动翻页**
-   - 新增页边缘对齐方式与单页/长条浏览始终居中选项。
-   - 新增可调间隔的自动翻页模式与控制面板联动。
-2. **独立动图播放模式与倍速控制**
-   - 新增专用的动图播放浏览模式与加载进度提示，阅读器翻页取消自动回归等待加载状态而不误报错误。
-   - 支持 GIF 与动态 WebP 播放倍速调节（上下栏 10 档预设 + 自定义纯数字输入 `0.1x–10x`）、单次/循环播放控制，以及全预览场景默认 `2x` 动图播放。
-3. **本地目录与 ZIP/CBZ 漫画导入**
-   - 支持直接导入设备本地图片目录或 `.zip` / `.cbz` 压缩包进入下载列表阅读，无需额外解压（管理目录内的加密压缩包同样支持密码弹窗）。
-   - 外部绝对路径条目的移动分类与删除列表项操作仅清理索引映射，**不会误删磁盘上的原始文件夹或压缩包**。
-4. **后台下载异常恢复、死锁修复与数据完整性加固**
-   - 引入序列化指令队列（`DownloadCommands`）与退避恢复状态机（`DownloadRecovery`），在前台受限、系统 `dataSync` 超时或进程回收后可按重启次数预算自动接续中断下载。
-   - 修复 `CronetEngine` 单线程回调有界缓冲防死锁，配合 `WakeLock`、Android 10+ 低延迟 `WifiLock`、单页重试退避与 30 秒流式停滞兜底看门狗。
-   - 加固原生 CBZ 归档错误传播与 `.tmp` 临时包原子替换，以及大文件跨界循环复制校对，防止磁盘写满或半传输导致截断或误删散图。
-5. **GitHub Release 自动构建与更新通道**
-   - 内置应用更新检查与关于页链接指向 GitHub 仓库，正式标签自动注入版本名并忽略 `v` 前缀做语义化版本对比，按设备 ABI 匹配 `arm64-v8a` / `x86_64` / `armeabi-v7a` / `universal` 发行包。
-6. **智能 Cookie 登录**
-   - 支持手动填写或一键粘贴多行冒号、浏览器请求头、`key=value` 与 JSON 自动提取 `ipb_member_id` / `ipb_pass_hash` / `igneous`，写入前等待 WebView Cookie 清空避免竞态。
-7. **画廊更新增量下载、动作选择与自动替换升级**
-   - 检测画廊新版后点击更新下载弹出选项菜单（增量更新并选下载分组 / 完整下载新版本并保留旧版 / 查看新版详情 / 删除旧版）；增量准备任务脱离页面生命周期在后台执行，并在下载页顶部展示实时进度条。
-   - 基于 `pToken` 复用本地旧版散图或 `.cbz`/`.zip` 未变更页面（含长度核验原子写入），仅下载新增/修改页；完成后自动迁移阅读进度并按用户选择安全替换旧版（完整下载保留旧版时自动撤除旧替换标记）。
-8. **自定义下载目录智能归属、封面缓存、手动排序与局部扫描**
-   - 按需手动触发双通道扫描，兼容直接选取单个画廊目录与 SAF / 物理下载目录；目录内不误标“本地”，外部导入保留路径并标记“本地”，年份等短编号目录自动隔离至负数本地 GID。
-   - 支持下载页顶部内嵌可取消扫描进度卡、封面内存缓存与 O(1) 压缩包封面定位防闪烁、封面底边阅读进度细条、已下载画廊手动拖拽排序（带抬起阴影）及中文标签多镜像回退补全。
-9. **阅读器智能背景取色**
-   - 在阅读器「背景颜色」设置中新增“智能取色”选项，自动采样当前页面裁白边后四边边缘像素并聚类柔化为一体化背景色（单页/条漫/动图模式全支持）。
-   - 自动联动灰度与反色滤镜变换，并在单页滑动与状态栏亮暗图标切换间平滑过渡。
+A modern EhViewer fork dedicated to high-performance
 
-## 构建说明
+with [Material Design 3](https://m3.material.io/)
+and [Dynamic Color](https://m3.material.io/styles/color/dynamic-color/overview) Support
 
-### 1. GitHub Actions 自动发版
+# Download
 
-仓库包含 [`.github/workflows/build-release.yml`](.github/workflows/build-release.yml)：
+| Flavor  | Minimum Android Version | Notes                          |
+|---------|-------------------------|--------------------------------|
+| Default | 8.0                     | Full support                   |
+| Nougat  | 7.0                     | Limited support, no guarantees |
 
-- 推送 `v*` 标签会自动触发 Release 构建并注入正式版本名；也可通过 **Actions -> Build Release APK -> Run workflow** 手动触发调试构建（默认仅构建 `arm64-v8a`，可选 `all`）。
-- 正式 `v*` 标签发版**强制要求**在仓库 Secrets 中配置以下 4 项私有签名凭证，缺项或检测到测试证书会立即中止构建（仅手动测试分发在无 Secrets 时允许回退仓库调试密钥）：
-  - `SIGNING_KEYSTORE_BASE64`（`.jks` 文件的 Base64 编码）
-  - `SIGNING_STORE_PASSWORD`
-  - `SIGNING_KEY_ALIAS`
-  - `SIGNING_KEY_PASSWORD`
+<a href="https://github.com/ikura23/EhViewer/releases">
+<img alt="Get it on GitHub" src="https://github.com/FooIbar/EhViewer-art/blob/master/get-it-on-github.svg" width="200px"/>
+</a>
 
-### 2. 本地构建
+# Screenshot
 
-要求安装 JDK 25、Android SDK / NDK 以及 `rust-toolchain.toml` 指定的 Rust nightly 工具链：
+![screenshots-01](https://github.com/FooIbar/EhViewer-art/blob/master/screenshots-01.webp)
+![screenshots-02](https://github.com/FooIbar/EhViewer-art/blob/master/screenshots-02.webp)
 
-```bash
-./gradlew :app:testDefaultDebugUnitTest
-./gradlew :app:assembleDefaultRelease -PreleaseAbi=arm64-v8a
-```
+# Thanks
 
-若使用本地私有签名，可将密钥放于 `.private-signing/release.jks` 并配置 `.private-signing/signing.properties`（该目录已被 `.gitignore` 忽略，切勿提交入库）。
+Here is the libraries
 
-## 开源许可
+- [Arrow](https://arrow-kt.io/)
+- [AOSP & AndroidX](https://source.android.com/)
+- [Kotlin & KotlinX](https://kotlinlang.org/)
+- [Material Icons](https://github.com/google/material-design-icons)
+- [Ktor](https://ktor.io/)
+- [Coil](https://coil-kt.github.io/coil/)
+- [Compose Destinations](https://composedestinations.rafaelcosta.xyz/)
+- [libarchive](https://www.libarchive.org/)
 
-本项目依据 [GNU General Public License v3.0](LICENSE) 发布。
+# License
+
+    Copyright 2014-2019 Hippo Seven
+    Copyright 2020-2022 NekoInverter
+    Copyright 2022-2023 Tarsin Norbin
+    Copyright 2023-2024 Foolbar
+
+    EhViewer is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+    EhViewer is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License along with EhViewer. If not, see <https://www.gnu.org/licenses/>.
