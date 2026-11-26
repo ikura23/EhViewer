@@ -20,12 +20,12 @@ import kotlin.time.Instant
 import kotlinx.io.asSource
 import moe.tarsin.coroutines.runSuspendCatching
 import okio.Path
-import tachiyomi.data.release.Artifacts
+import tachiyomi.data.release.ArtifactsResponse
 import tachiyomi.data.release.CommitComparison
 import tachiyomi.data.release.Release
 import tachiyomi.data.release.Repository
 import tachiyomi.data.release.WorkflowRuns
-import tachiyomi.data.release.downloadLink
+import tachiyomi.data.release.downloadLinkOrNull
 
 const val API_URL = "https://api.github.com/repos/${BuildConfig.REPO_NAME}"
 const val LATEST_RELEASE_URL = "$API_URL/releases/latest"
@@ -40,11 +40,15 @@ object AppUpdater {
             if (Settings.useCIUpdateChannel.value) {
                 val curSha = BuildConfig.COMMIT_SHA
                 val branch = statement(API_URL).executeAndParseAs<Repository>().defaultBranch
-                val run = statement("$API_URL/actions/runs?event=push&status=success&ref=refs/heads/$branch").executeAndParseAs<WorkflowRuns>().workflowRuns[0]
+                val run = statement("$API_URL/actions/runs?event=push&status=success&branch=$branch")
+                    .executeAndParseAs<WorkflowRuns>()
+                    .workflowRuns
+                    .firstOrNull() ?: return null
                 val shortSha = run.headSha.take(7)
                 if (shortSha != curSha) {
-                    val artifacts = statement("$API_URL/actions/runs/${run.id}/artifacts").executeAndParseAs<Artifacts>()
-                    val archiveUrl = artifacts.downloadLink
+                    val artifactsResp = statement("$API_URL/actions/runs/${run.id}/artifacts")
+                        .executeAndParseAs<ArtifactsResponse>()
+                    val archiveUrl = artifactsResp.artifacts.downloadLinkOrNull ?: return null
                     val changelog = runSuspendCatching {
                         val commitComparisonUrl = "$API_URL/compare/$curSha...$shortSha"
                         val result = statement(commitComparisonUrl).executeAndParseAs<CommitComparison>()
@@ -58,11 +62,11 @@ object AppUpdater {
             } else {
                 val curVersion = BuildConfig.RAW_VERSION_NAME
                 val release = statement(LATEST_RELEASE_URL).executeAndParseAs<Release>()
-                val latestVersion = release.version
+                val latestVersion = release.version.trim()
                 val description = release.info
-                val downloadUrl = release.getDownloadLink()
-                if (latestVersion != curVersion) {
-                    return EhRelease(latestVersion, description, downloadUrl)
+                val downloadUrl = release.getDownloadLinkOrNull() ?: return null
+                if (isRemoteVersionNewer(latestVersion, curVersion)) {
+                    return EhRelease(latestVersion.removePrefix("v").removePrefix("V"), description, downloadUrl)
                 }
             }
         }
@@ -109,3 +113,32 @@ data class EhRelease(
     val changelog: String,
     val downloadLink: String,
 )
+
+/**
+ * 比较远端发布版本号是否严格高于本地当前版本：
+ * - 自动忽略前导 `v`/`V`；
+ * - 逐段比较点分数字版本号；
+ * - 若主版本号相等，且本地为 `-SNAPSHOT` 而远端为正式版，视为有新正式版可更新；
+ * - 同版本或更低版本返回 `false`，避免稳定渠道反复提示更新。
+ */
+internal fun isRemoteVersionNewer(remoteVersion: String, currentVersion: String): Boolean {
+    val cleanRemote = remoteVersion.trim().removePrefix("v").removePrefix("V")
+    val cleanCurrent = currentVersion.trim().removePrefix("v").removePrefix("V")
+    if (cleanRemote.isEmpty() || cleanCurrent.isEmpty()) return false
+
+    val remoteCore = cleanRemote.substringBefore('-')
+    val currentCore = cleanCurrent.substringBefore('-')
+    val remoteParts = remoteCore.split('.').map { it.toIntOrNull() ?: 0 }
+    val currentParts = currentCore.split('.').map { it.toIntOrNull() ?: 0 }
+    val maxLen = maxOf(remoteParts.size, currentParts.size)
+
+    for (i in 0 until maxLen) {
+        val r = remoteParts.getOrElse(i) { 0 }
+        val c = currentParts.getOrElse(i) { 0 }
+        if (r != c) return r > c
+    }
+
+    val currentIsSnapshot = cleanCurrent.contains("SNAPSHOT", ignoreCase = true)
+    val remoteIsSnapshot = cleanRemote.contains("SNAPSHOT", ignoreCase = true)
+    return currentIsSnapshot && !remoteIsSnapshot
+}

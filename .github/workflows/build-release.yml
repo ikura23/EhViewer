@@ -70,8 +70,11 @@ jobs:
           keyPassword=$KEY_PASSWORD
           EOF
             echo "Configured private release signing."
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "::error::Tag release requires SIGNING_KEYSTORE_BASE64, SIGNING_STORE_PASSWORD, SIGNING_KEY_ALIAS, and SIGNING_KEY_PASSWORD secrets."
+            exit 1
           else
-            echo "No release signing secrets configured; falling back to repository keystore."
+            echo "No release signing secrets configured; falling back to repository debug keystore for manual dispatch."
           fi
 
       - name: Run Unit Tests
@@ -79,7 +82,10 @@ jobs:
 
       - name: Build Release APK
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.abi }}" = "arm64-v8a" ]; then
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            RELEASE_VER="${GITHUB_REF_NAME#v}"
+            REQUIRE_PRIVATE_SIGNING=true ./gradlew :app:assembleDefaultRelease -Prelease "-PreleaseVersion=${RELEASE_VER}" --no-daemon --console=plain
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.abi }}" = "arm64-v8a" ]; then
             ./gradlew :app:assembleDefaultRelease -PreleaseAbi=arm64-v8a --no-daemon --console=plain
           else
             ./gradlew :app:assembleDefaultRelease --no-daemon --console=plain
@@ -88,9 +94,16 @@ jobs:
       - name: Prepare Release Assets
         run: |
           VERSION="${GITHUB_REF_NAME:-${GITHUB_SHA::7}}"
+          APKSIGNER="$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n 1)"
           mkdir -p release-assets
           shopt -s nullglob
           for apk in app/build/outputs/apk/default/release/*.apk; do
+            CERTS=$("$APKSIGNER" verify --print-certs "$apk")
+            printf '%s\n' "$CERTS"
+            if [[ "${{ github.ref }}" == refs/tags/v* ]] && printf '%s\n' "$CERTS" | grep -q "CN=tarsin"; then
+              echo "::error::$apk is signed with fallback repository debug certificate!"
+              exit 1
+            fi
             base="$(basename "$apk")"
             case "$base" in
               *arm64-v8a*)

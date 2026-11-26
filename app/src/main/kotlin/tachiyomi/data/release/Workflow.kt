@@ -1,6 +1,5 @@
 package tachiyomi.data.release
 
-import com.ehviewer.core.util.unreachable
 import com.hippo.ehviewer.util.AppConfig
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -13,15 +12,18 @@ data class WorkflowRuns(@SerialName("workflow_runs") val workflowRuns: List<Work
 
 @Serializable
 data class WorkflowRun(
-    @SerialName("commit_sha") val headSha: String,
-    @SerialName("title") val title: String,
-    @SerialName("id") val id: Int,
+    @SerialName("head_sha") val headSha: String,
+    @SerialName("display_title") val title: String,
+    @SerialName("id") val id: Long,
 )
 
-typealias Artifacts = List<Artifact>
+@Serializable
+data class ArtifactsResponse(
+    @SerialName("artifacts") val artifacts: List<Artifact> = emptyList(),
+)
 
-val Artifacts.downloadLink
-    get() = (find { AppConfig.matchVariant(it.name) } ?: unreachable()).downloadLink
+val List<Artifact>.downloadLinkOrNull: String?
+    get() = find { AppConfig.matchVariant(it.name) }?.downloadLink
 
 @Serializable
 data class Artifact(

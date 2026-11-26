@@ -36,26 +36,45 @@ android {
         }
     }
 
-    // 优先使用外部私有签名配置或环境变量，均缺失时才回退仓库默认调试签名
+    // 优先使用外部私有签名配置或环境变量；正式发布构建（-Prelease / REQUIRE_PRIVATE_SIGNING=true）缺少有效私钥时直接失败终止
+    val signingPropertiesFile = rootProject.file(".private-signing/signing.properties").takeIf { it.isFile }
     val signingProperties = Properties().apply {
-        rootProject.file(".private-signing/signing.properties").takeIf { it.isFile }?.inputStream()?.use(::load)
+        signingPropertiesFile?.inputStream()?.use(::load)
     }
     fun signingValue(environment: String, property: String): String? =
-        providers.environmentVariable(environment).orNull ?: signingProperties.getProperty(property)
+        providers.environmentVariable(environment).orNull?.takeIf { it.isNotBlank() }
+            ?: signingProperties.getProperty(property)?.takeIf { it.isNotBlank() }
 
-    val customStorePath = signingValue("SIGNING_STORE_FILE", "storeFile")
-        ?: rootProject.file(".private-signing/androidkey.jks").takeIf { it.isFile }?.absolutePath
+    val envStoreFile = providers.environmentVariable("SIGNING_STORE_FILE").orNull?.takeIf { it.isNotBlank() }
+    val propStoreFile = signingProperties.getProperty("storeFile")?.takeIf { it.isNotBlank() }
+    val resolvedCustomStoreFile: File? = when {
+        envStoreFile != null -> rootProject.file(envStoreFile)
+        propStoreFile != null -> {
+            val candidate = File(propStoreFile)
+            if (candidate.isAbsolute) candidate else File(signingPropertiesFile!!.parentFile, propStoreFile)
+        }
+        else -> rootProject.file(".private-signing/androidkey.jks").takeIf { it.isFile }
+    }
     val customStorePassword = signingValue("SIGNING_STORE_PASSWORD", "storePassword")
     val customKeyAlias = signingValue("SIGNING_KEY_ALIAS", "keyAlias")
     val customKeyPassword = signingValue("SIGNING_KEY_PASSWORD", "keyPassword")
-    val hasCustomSigning = customStorePath != null && file(customStorePath).isFile &&
+    val hasCustomSigning = resolvedCustomStoreFile != null && resolvedCustomStoreFile.isFile &&
         !customStorePassword.isNullOrEmpty() &&
         !customKeyAlias.isNullOrEmpty() &&
         !customKeyPassword.isNullOrEmpty()
 
+    val requirePrivateSigning = hasProperty("release") ||
+        providers.environmentVariable("REQUIRE_PRIVATE_SIGNING").orNull.equals("true", ignoreCase = true)
+    if (requirePrivateSigning && !hasCustomSigning) {
+        error(
+            "Private release signing material is required for release builds, " +
+                "but valid keystore/credentials were not found (resolvedStoreFile=${resolvedCustomStoreFile?.absolutePath}).",
+        )
+    }
+
     val signConfig = signingConfigs.create("release") {
         if (hasCustomSigning) {
-            storeFile = file(customStorePath)
+            storeFile = resolvedCustomStoreFile
             storePassword = customStorePassword
             keyAlias = customKeyAlias
             keyPassword = customKeyPassword
@@ -83,14 +102,23 @@ android {
         .removeSuffix(".git")
 
     val snapshot = !hasProperty("release")
+    val releaseVersionProp = providers.gradleProperty("releaseVersion").orNull
+        ?.trim()
+        ?.removePrefix("v")
+        ?.removePrefix("V")
+        ?.takeIf { it.isNotEmpty() }
+    val releaseVersionCode = providers.gradleProperty("releaseVersionCode").orNull
+        ?.trim()
+        ?.toIntOrNull()
+        ?: 180063
 
     defaultConfig {
         applicationId = "com.ys.ehviewer"
-        versionCode = 180063
+        versionCode = releaseVersionCode
         versionName = if (snapshot) {
             "1.15.0-SNAPSHOT"
         } else {
-            "1.14.6"
+            releaseVersionProp ?: "1.14.6"
         }
         buildConfigField("boolean", "SNAPSHOT", "$snapshot")
         buildConfigField("String", "RAW_VERSION_NAME", "\"$versionName\"")

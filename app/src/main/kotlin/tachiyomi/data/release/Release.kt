@@ -15,6 +15,11 @@ data class Release(
         val asset = assets.find { AppConfig.matchVariant(it.name) } ?: assets[0]
         return asset.url
     }
+
+    fun getDownloadLinkOrNull(): String? {
+        if (assets.isEmpty()) return null
+        return (assets.find { AppConfig.matchVariant(it.name) } ?: assets.firstOrNull())?.url
+    }
 }
 
 @Serializable
