@@ -37,6 +37,11 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Accept Android SDK Licenses & Install Required SDK/NDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-37.2" "ndk;30.0.16248370"
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
