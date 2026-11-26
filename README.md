@@ -1,3 +1,5 @@
+源自FooIbar，用vibe coding优化并发布，欢迎提issues https://github.com/FooIbar/EhViewer
+
 <p align="right">
   <strong>English</strong>
   <span> | </span>
