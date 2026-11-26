@@ -71,7 +71,6 @@
 | フレーバー   | 最小の Android バージョン | 注意事項              |
 |---------|-------------------|-------------------|
 | Default | 8.0               | 完全なサポート           |
-| Nougat  | 7.0               | サポートは限定的、保証はできません |
 
 <a href="https://github.com/ikura23/EhViewer/releases">
 <img alt="Get it on GitHub" src="https://github.com/FooIbar/EhViewer-art/blob/master/get-it-on-github.svg" width="200px"/>

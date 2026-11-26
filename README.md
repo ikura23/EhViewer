@@ -72,7 +72,6 @@ and [Dynamic Color](https://m3.material.io/styles/color/dynamic-color/overview) 
 | Flavor  | Minimum Android Version | Notes                          |
 |---------|-------------------------|--------------------------------|
 | Default | 8.0                     | Full support                   |
-| Nougat  | 7.0                     | Limited support, no guarantees |
 
 <a href="https://github.com/ikura23/EhViewer/releases">
 <img alt="Get it on GitHub" src="https://github.com/FooIbar/EhViewer-art/blob/master/get-it-on-github.svg" width="200px"/>

@@ -71,7 +71,6 @@
 | 变种      | 最低 Android 版本 | 备注       |
 |---------|---------------|----------|
 | Default | 8.0           | 完全支持     |
-| Nougat  | 7.0           | 有限支持，无保证 |
 
 <a href="https://github.com/ikura23/EhViewer/releases">
 <img alt="Get it on GitHub" src="https://github.com/FooIbar/EhViewer-art/blob/master/get-it-on-github.svg" width="200px"/>
