@@ -92,11 +92,13 @@ import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.currentCompositeKeyHashCode
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.snapshots.SnapshotStateList
@@ -405,9 +407,15 @@ class MainActivity : AppCompatActivity() {
             val launchPage by Settings.launchPage.collectAsState()
             val scanProgress by LocalGalleryScanner.scanProgress.collectAsState()
             val updateProgress by GalleryUpdateTracker.progress.collectAsState()
+            // 使用 rememberSaveable 记录已消费事件号，避免配置变化或重建 Activity 时重弹历史提示
+            var lastHandledScanEventId by rememberSaveable { mutableIntStateOf(scanProgress.completedEventId) }
+            var lastHandledUpdateEventId by rememberSaveable { mutableIntStateOf(updateProgress.finishedEventId) }
             LaunchedEffect(scanProgress.completedEventId) {
-                val res = scanProgress.lastResult
-                if (scanProgress.completedEventId > 0 && res != null && (scanProgress.lastRunUserInitiated || res.imported > 0 || res.metadataUpdated > 0)) {
+                val eventId = scanProgress.completedEventId
+                if (eventId <= lastHandledScanEventId) return@LaunchedEffect
+                lastHandledScanEventId = eventId
+                val res = scanProgress.lastResult ?: return@LaunchedEffect
+                if (scanProgress.lastRunUserInitiated || res.imported > 0 || res.metadataUpdated > 0) {
                     snackbarState.showSnackbar(
                         getString(
                             R.string.download_scan_complete_summary,
@@ -419,7 +427,9 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             LaunchedEffect(updateProgress.finishedEventId) {
-                if (updateProgress.finishedEventId <= 0) return@LaunchedEffect
+                val eventId = updateProgress.finishedEventId
+                if (eventId <= lastHandledUpdateEventId) return@LaunchedEffect
+                lastHandledUpdateEventId = eventId
                 val error = updateProgress.errorMessage
                 val msg = if (error != null) {
                     getString(R.string.download_update_failed, error)

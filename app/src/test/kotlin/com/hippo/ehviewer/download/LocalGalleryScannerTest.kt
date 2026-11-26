@@ -4,8 +4,10 @@ import com.ehviewer.core.database.model.DownloadEntity
 import com.ehviewer.core.database.model.DownloadInfo
 import com.ehviewer.core.database.model.GalleryEntity
 import com.hippo.ehviewer.coil.resolveGalleryThumbCacheKey
+import java.io.ByteArrayInputStream
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -191,8 +193,60 @@ class LocalGalleryScannerTest {
         val item2 = dummyInfo(2L, 200L)
         val newUnranked = dummyInfo(3L, 300L)
         val ranks = mapOf(2L to 0, 1L to 1)
+        val comparator = SortMode(SortMode.Field.CUSTOM, SortMode.Order.ASC).comparator(ranks)
         val sorted = listOf(item1, item2, newUnranked)
-            .sortedWith(SortMode(SortMode.Field.CUSTOM, SortMode.Order.ASC).comparator(ranks))
+            .sortedWith(comparator)
         assertEquals(listOf(3L, 2L, 1L), sorted.map { it.gid })
+
+        // 在筛选子集 [2, 1] 中拖拽交换后，未出现的未排名新条目 3 应继续留在最前而不沉底
+        val currentGlobalOrder = sorted.map { it.gid }
+        val mergedAfterSubsetDrag = mergeManualOrder(currentGlobalOrder, listOf(1L, 2L))
+        assertEquals(listOf(3L, 1L, 2L), mergedAfterSubsetDrag)
+    }
+
+    @Test
+    fun avoidsFalsePositiveGalleryGidsForYearOrShortPrefixedFolders() {
+        val yearTravel = resolveFolderGid(
+            folderName = "2023-05 旅行",
+            spiderGid = null,
+            parsedGid = null,
+            canonicalDirPath = "/storage/emulated/0/Download/2023-05 旅行",
+        )
+        val yearDinner = resolveFolderGid(
+            folderName = "2023-08 聚餐",
+            spiderGid = null,
+            parsedGid = null,
+            canonicalDirPath = "/storage/emulated/0/Download/2023-08 聚餐",
+        )
+        assertTrue(yearTravel < 0L)
+        assertTrue(yearDinner < 0L)
+        assertNotEquals(yearTravel, yearDinner)
+
+        val realGallery = resolveFolderGid(
+            folderName = "4203956-[Dynamic Gallery]",
+            spiderGid = null,
+            parsedGid = null,
+            canonicalDirPath = "/storage/emulated/0/EhViewer/download/4203956-[Dynamic Gallery]",
+        )
+        assertEquals(4203956L, realGallery)
+
+        val explicitMetaOverridesFolder = resolveFolderGid(
+            folderName = "2023-05 合集",
+            spiderGid = 999999L,
+            parsedGid = null,
+            canonicalDirPath = "/storage/emulated/0/Download/2023-05 合集",
+        )
+        assertEquals(999999L, explicitMetaOverridesFolder)
+    }
+
+    @Test
+    fun enforcesStreamByteLimitWhenReadingSafStreams() {
+        val withinLimit = ByteArray(1024) { 0x2A }
+        val readOk = readStreamBytesLimited(ByteArrayInputStream(withinLimit), 1024L)
+        assertEquals(1024, readOk?.size)
+
+        val overLimit = ByteArray(1025) { 0x2A }
+        assertNull(readStreamBytesLimited(ByteArrayInputStream(overLimit), 1024L))
+        assertNull(readStreamBytesLimited(ByteArrayInputStream(ByteArray(0)), 1024L))
     }
 }

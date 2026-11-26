@@ -28,10 +28,13 @@ import com.hippo.ehviewer.coil.SpeedGifDrawable
 import com.hippo.ehviewer.download.LocalGalleryScanner
 import com.hippo.ehviewer.download.downloadDir
 import com.hippo.ehviewer.download.isAnimatedImageFile
+import com.hippo.ehviewer.download.readStreamBytesLimited
 import com.hippo.ehviewer.download.resolveDownloadLocationPath
 import com.hippo.ehviewer.gallery.LocalFolderPageLoader
 import java.io.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 
 /**
@@ -46,6 +49,7 @@ const val MAX_ANIMATED_PREVIEW_BYTES = 16L * 1024 * 1024
 
 private val PREVIEW_IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp", "gif", "avif")
 private val PADDED_PAGE_REGEX = Regex("^(\\d+)\\.([a-zA-Z0-9]+)$")
+private val gifDecodeSemaphore = Semaphore(3)
 
 /**
  * 通用预览动图/图片显示组件：
@@ -67,19 +71,19 @@ fun AnimatedPreviewImage(
     onError: (@Composable () -> Unit)? = null,
 ) {
     val context = LocalContext.current
-    val gifMovieResult by produceState<GifDecodeState>(GifDecodeState.Pending, data, cacheKey) {
+    val previewState by produceState<PreviewDecodeState>(PreviewDecodeState.Pending, data, cacheKey) {
         value = withContext(Dispatchers.IO) {
             decodePreviewGifMovieIfNeeded(context, data)
         }
     }
 
-    when (val gifState = gifMovieResult) {
-        GifDecodeState.Pending -> {
+    when (val state = previewState) {
+        PreviewDecodeState.Pending -> {
             // 等待极速文件头探测时暂不做重复解码，避免 GIF 被系统 AnimatedImageDecoder 抢先解码后再重绘闪烁
         }
-        is GifDecodeState.Gif -> {
-            val speedGif = remember(gifState.movie) {
-                SpeedGifDrawable(gifState.movie).apply {
+        is PreviewDecodeState.Gif -> {
+            val speedGif = remember(state.movie) {
+                SpeedGifDrawable(state.movie).apply {
                     looping = true
                     this.speed = speed
                 }
@@ -102,14 +106,14 @@ fun AnimatedPreviewImage(
                 contentScale = contentScale,
             )
         }
-        GifDecodeState.NotGif -> {
-            val request = remember(data, cacheKey, sceneTag, context) {
+        is PreviewDecodeState.NonGif -> {
+            val request = remember(data, cacheKey, sceneTag, state.isAnimated, context) {
                 val builder = ImageRequest.Builder(context)
                     .data(data)
                     .diskCacheKey(cacheKey)
                     .crossfade(false)
-                // 对可能解出 AnimatedWebPDrawable 的动图禁用跨界面内存实例共享，避免互抢播放生命周期
-                if (isLikelyAnimatedSource(data)) {
+                // 仅依据 IO 协程已完成的文件头探测结果决定是否禁用内存缓存共享，彻底消除组合线程读盘
+                if (state.isAnimated) {
                     builder.memoryCachePolicy(CachePolicy.DISABLED)
                 } else {
                     builder.memoryCacheKey("$sceneTag:$cacheKey")
@@ -160,12 +164,12 @@ fun AnimatedPreviewImage(
     }
 }
 
-private sealed interface GifDecodeState {
-    data object Pending : GifDecodeState
+private sealed interface PreviewDecodeState {
+    data object Pending : PreviewDecodeState
     data class Gif(
         @Suppress("DEPRECATION") val movie: Movie,
-    ) : GifDecodeState
-    data object NotGif : GifDecodeState
+    ) : PreviewDecodeState
+    data class NonGif(val isAnimated: Boolean) : PreviewDecodeState
 }
 
 private fun isLikelyAnimatedSource(data: Any): Boolean = when (data) {
@@ -175,13 +179,16 @@ private fun isLikelyAnimatedSource(data: Any): Boolean = when (data) {
 }
 
 @Suppress("DEPRECATION")
-private fun decodePreviewGifMovieIfNeeded(context: Context, data: Any): GifDecodeState {
-    val bytes = readGifBytesIfAnimated(context, data) ?: return GifDecodeState.NotGif
-    val movie = runCatching {
-        Movie.decodeByteArray(bytes, 0, bytes.size)
-    }.getOrNull() ?: return GifDecodeState.NotGif
-    if (movie.duration() <= 0) return GifDecodeState.NotGif
-    return GifDecodeState.Gif(movie)
+private suspend fun decodePreviewGifMovieIfNeeded(context: Context, data: Any): PreviewDecodeState {
+    val bytes = readGifBytesIfAnimated(context, data)
+        ?: return PreviewDecodeState.NonGif(isLikelyAnimatedSource(data))
+    val movie = gifDecodeSemaphore.withPermit {
+        runCatching {
+            Movie.decodeByteArray(bytes, 0, bytes.size)
+        }.getOrNull()
+    } ?: return PreviewDecodeState.NonGif(isLikelyAnimatedSource(data))
+    if (movie.duration() <= 0) return PreviewDecodeState.NonGif(isLikelyAnimatedSource(data))
+    return PreviewDecodeState.Gif(movie)
 }
 
 private fun readGifBytesIfAnimated(context: Context, data: Any): ByteArray? = runCatching {
@@ -196,15 +203,9 @@ private fun readGifBytesIfAnimated(context: Context, data: Any): ByteArray? = ru
         is Uri -> {
             val stream = context.contentResolver.openInputStream(data) ?: return null
             stream.use { input ->
-                val header = ByteArray(16)
-                val headerLen = input.read(header)
-                if (headerLen < 6 || !isGifHeader(header, headerLen)) return null
-                val remaining = input.readBytes()
-                if (headerLen + remaining.size > MAX_ANIMATED_PREVIEW_BYTES) return null
-                ByteArray(headerLen + remaining.size).apply {
-                    System.arraycopy(header, 0, this, 0, headerLen)
-                    System.arraycopy(remaining, 0, this, headerLen, remaining.size)
-                }
+                val bytes = readStreamBytesLimited(input, MAX_ANIMATED_PREVIEW_BYTES) ?: return null
+                if (!isGifHeader(bytes, bytes.size)) return null
+                bytes
             }
         }
         else -> null

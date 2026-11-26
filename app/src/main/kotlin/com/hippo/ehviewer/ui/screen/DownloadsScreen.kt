@@ -736,8 +736,12 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
                 val isManualSort = SortMode.from(sortMode).field == SortMode.Field.CUSTOM
                 val listHapticFeedback = rememberHapticFeedback()
                 val reorderableListState = rememberReorderableLazyListState(listState) { from, to ->
-                    list.apply { add(to.index, removeAt(from.index)) }
-                    listHapticFeedback.performHapticFeedback(HapticFeedbackType.MOVE)
+                    val fromIdx = list.indexOfFirst { it.gid == from.key }
+                    val toIdx = list.indexOfFirst { it.gid == to.key }
+                    if (fromIdx >= 0 && toIdx >= 0 && fromIdx != toIdx) {
+                        list.apply { add(toIdx, removeAt(fromIdx)) }
+                        listHapticFeedback.performHapticFeedback(HapticFeedbackType.MOVE)
+                    }
                 }
                 FastScrollLazyColumn(
                     modifier = Modifier.nestedScroll(searchBarConnection).fillMaxSize(),

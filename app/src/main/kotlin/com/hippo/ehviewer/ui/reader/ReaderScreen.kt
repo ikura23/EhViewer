@@ -595,48 +595,51 @@ fun ReaderScreen(pageLoader: PageLoader, info: BaseGalleryInfo?, isLocalDownload
 }
 
 context(_: Context, _: DialogState, nav: DestinationsNavigator)
-suspend inline fun <T> usePageLoader(args: ReaderScreenArgs, crossinline block: suspend (PageLoader) -> T) = when (args) {
-    is ReaderScreenArgs.Gallery -> {
-        val info = args.info
-        val page = args.page.takeUnless { it == -1 } ?: EhDB.getReadProgress(info.gid)
-        val download = DownloadManager.getDownloadInfo(info.gid)
-        // 只有明确的本地导入条目才用目录加载器。普通下载即使目录里已经有图片，
-        // 也必须走网络加载器按详情页数补页；否则部分下载（9/531）会被 files.size
-        // 截断成 9 页，在线阅读显示 9/9 且翻不过去。
-        val localDir = download?.takeIf { it.isLocal }?.downloadDir?.takeIf { it.isDirectory }
-        val localFiles = localDir?.let { LocalFolderPageLoader.imageFiles(it) }
-        if (!localFiles.isNullOrEmpty()) {
-            coroutineScope {
-                val loader = LocalFolderPageLoader(this, info, page, localFiles)
-                try {
-                    block(loader)
-                } finally {
-                    loader.close()
-                }
-            }
-        } else {
-            val archive = download?.archiveFile
-            if (archive != null) {
-                useArchivePageLoader(archive, info, page, info.hasAds, { error("Managed Archive have password???") }, block)
-            } else {
-                useEhPageLoader(info, page, block)
-            }
+suspend inline fun <T> usePageLoader(args: ReaderScreenArgs, crossinline block: suspend (PageLoader) -> T): T {
+    val passwdProvider: suspend ((String) -> Boolean) -> String = { invalidator ->
+        awaitInputText(
+            title = string(R.string.archive_need_passwd),
+            hint = string(R.string.archive_passwd),
+            onUserDismiss = { nav.popBackStack() },
+        ) { text ->
+            ensure(text.isNotBlank()) { string(R.string.passwd_cannot_be_empty) }
+            ensure(invalidator(text)) { string(R.string.passwd_wrong) }
         }
     }
-    is ReaderScreenArgs.Archive -> useArchivePageLoader(
-        args.path.toPath(),
-        passwdProvider = { invalidator ->
-            awaitInputText(
-                title = string(R.string.archive_need_passwd),
-                hint = string(R.string.archive_passwd),
-                onUserDismiss = { nav.popBackStack() },
-            ) { text ->
-                ensure(text.isNotBlank()) { string(R.string.passwd_cannot_be_empty) }
-                ensure(invalidator(text)) { string(R.string.passwd_wrong) }
+    return when (args) {
+        is ReaderScreenArgs.Gallery -> {
+            val info = args.info
+            val page = args.page.takeUnless { it == -1 } ?: EhDB.getReadProgress(info.gid)
+            val download = DownloadManager.getDownloadInfo(info.gid)
+            // 只有明确的本地导入条目才用目录加载器。普通下载即使目录里已经有图片，
+            // 也必须走网络加载器按详情页数补页；否则部分下载（9/531）会被 files.size
+            // 截断成 9 页，在线阅读显示 9/9 且翻不过去。
+            val localDir = download?.takeIf { it.isLocal }?.downloadDir?.takeIf { it.isDirectory }
+            val localFiles = localDir?.let { LocalFolderPageLoader.imageFiles(it) }
+            if (!localFiles.isNullOrEmpty()) {
+                coroutineScope {
+                    val loader = LocalFolderPageLoader(this, info, page, localFiles)
+                    try {
+                        block(loader)
+                    } finally {
+                        loader.close()
+                    }
+                }
+            } else {
+                val archive = download?.archiveFile
+                if (archive != null) {
+                    useArchivePageLoader(archive, info, page, info.hasAds, passwdProvider, block)
+                } else {
+                    useEhPageLoader(info, page, block)
+                }
             }
-        },
-        block = block,
-    )
+        }
+        is ReaderScreenArgs.Archive -> useArchivePageLoader(
+            args.path.toPath(),
+            passwdProvider = passwdProvider,
+            block = block,
+        )
+    }
 }
 
 private class SmartColorHolder(var color: Color? = null)

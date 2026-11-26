@@ -18,6 +18,7 @@ import com.ehviewer.core.files.list
 import com.ehviewer.core.files.openFileDescriptor
 import com.ehviewer.core.files.toOkioPath
 import com.ehviewer.core.model.BaseGalleryInfo
+import com.ehviewer.core.util.logcat
 import com.hippo.ehviewer.client.EhEngine
 import com.hippo.ehviewer.client.EhUrl
 import com.hippo.ehviewer.client.parser.GalleryDetailUrlParser
@@ -29,13 +30,17 @@ import com.hippo.ehviewer.spider.readComicInfo
 import com.hippo.ehviewer.spider.readCompatFromPath
 import com.hippo.ehviewer.spider.toSimpleTags
 import com.hippo.ehviewer.util.AppConfig
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
 import java.net.URLDecoder
 import java.nio.ByteBuffer
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.ZipFile
 import java.util.zip.ZipInputStream
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -46,6 +51,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import moe.tarsin.coroutines.runSuspendCatching
 import okio.Path
 import okio.Path.Companion.toOkioPath
 import okio.Path.Companion.toPath
@@ -59,10 +65,17 @@ import okio.Path.Companion.toPath
  * - 扫描后自动在后台分批联网补全分类、作者、上传者与封面信息，并保护动图封面不被压成静态缩略图。
  */
 object LocalGalleryScanner {
+    private const val TAG = "LocalGalleryScanner"
     private const val LOCAL_LABEL = "本地"
+    private const val METADATA_COOLDOWN_MS = 10 * 60 * 1000L
     private val scanMutex = Mutex()
-    private val scanScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scanScope = CoroutineScope(
+        SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, error ->
+            logcat(TAG, error)
+        },
+    )
     private val stateLock = Any()
+    private val failedMetadataCooldown = ConcurrentHashMap<Long, Long>()
 
     enum class ScanStage {
         IDLE,
@@ -137,6 +150,9 @@ object LocalGalleryScanner {
                     extraRoots = extraRoots,
                     onlyConfiguredDownloadDir = onlyConfiguredDownloadDir,
                 )
+            } catch (e: Throwable) {
+                if (e is CancellationException) throw e
+                logcat(TAG, e)
             } finally {
                 synchronized(stateLock) {
                     _scanProgress.update { prev ->
@@ -261,6 +277,21 @@ object LocalGalleryScanner {
             val roots = deduplicateRoots(rawRoots)
             rootCount += roots.size
             for (root in roots) {
+                val rootKey = canonicalPath(root)
+                val rootEntries = runCatching { root.list() }.getOrNull()
+                // 若用户直接选取某个画廊文件夹作为扫描根目录，应直接识别该根目录自身
+                if (rootEntries != null && looksLikeGalleryFromEntries(rootEntries) && rootKey !in processedPaths) {
+                    scanned++
+                    val item = runCatching { readLocalItem(root, rootEntries) }.getOrNull()
+                    if (item != null) {
+                        if (importItem(item, root, isArchive = false, configuredRoot = configuredRoot, appDownloadRoots = appDownloadRoots) == true) {
+                            imported++
+                        }
+                        processedPaths += rootKey
+                        updateScanningProgress(scanned)
+                        continue
+                    }
+                }
                 val pending = ArrayDeque<Pair<Path, Int>>()
                 pending.addLast(root to 0)
                 while (pending.isNotEmpty()) {
@@ -268,7 +299,7 @@ object LocalGalleryScanner {
                     val entries = runCatching { dir.list() }.getOrElse { continue }
                     for (entry in entries) {
                         val entryKey = canonicalPath(entry)
-                        if (entry.isDirectory) {
+                        if (runCatching { entry.isDirectory }.getOrDefault(false)) {
                             val subEntries = runCatching { entry.list() }.getOrNull()
                             if (subEntries != null && looksLikeGalleryFromEntries(subEntries)) {
                                 if (entryKey in processedPaths) continue
@@ -393,15 +424,16 @@ object LocalGalleryScanner {
     }
 
     private suspend fun enrichMissingMetadata(): Int {
+        val now = System.currentTimeMillis()
         val candidates = DownloadManager.downloadInfoList.filter { info ->
-            info.gid > 0L &&
-                isValidGalleryHexToken(info.token) &&
-                (
-                    info.category == 0 ||
-                        info.uploader.isNullOrBlank() ||
-                        info.thumbKey.isNullOrBlank() ||
-                        '/' !in info.thumbKey!!
-                    )
+            if (info.gid <= 0L || !isValidGalleryHexToken(info.token)) return@filter false
+            val needsMetadata = info.category == 0 ||
+                info.uploader.isNullOrBlank() ||
+                info.thumbKey.isNullOrBlank() ||
+                '/' !in info.thumbKey!!
+            if (!needsMetadata) return@filter false
+            val lastAttempt = failedMetadataCooldown[info.gid]
+            lastAttempt == null || now - lastAttempt >= METADATA_COOLDOWN_MS
         }.map { info ->
             BaseGalleryInfo(gid = info.gid, token = info.token)
         }
@@ -419,15 +451,21 @@ object LocalGalleryScanner {
         }
 
         for (batch in candidates.chunked(25)) {
-            runCatching {
+            val attemptTime = System.currentTimeMillis()
+            val response = runSuspendCatching {
                 EhEngine.fillGalleryListByApi(batch, EhUrl.referer)
-            }.onSuccess {
+            }
+            if (response.isSuccess) {
+                val validFilled = mutableListOf<BaseGalleryInfo>()
                 for (filled in batch) {
                     if (filled.category != 0 || !filled.uploader.isNullOrBlank() || !filled.simpleTags.isNullOrEmpty()) {
-                        if (DownloadManager.syncGalleryMetadata(filled)) {
-                            updated++
-                        }
+                        validFilled += filled
+                    } else {
+                        failedMetadataCooldown[filled.gid] = attemptTime
                     }
+                }
+                if (validFilled.isNotEmpty()) {
+                    updated += DownloadManager.syncGalleryMetadataBatch(validFilled)
                 }
             }
             processed += batch.size
@@ -675,7 +713,7 @@ object LocalGalleryScanner {
                         val entry = zis.nextEntry ?: break
                         if (!entry.isDirectory && isArchiveImageEntry(entry.name) && entry.size <= MAX_THUMB_SOURCE_BYTES) {
                             if (bestName == null || LocalFolderPageLoader.NATURAL_NAME_COMPARATOR.compare(entry.name, bestName) < 0) {
-                                val bytes = runCatching { zis.readBytes() }.getOrNull()
+                                val bytes = runCatching { readStreamBytesLimited(zis, MAX_THUMB_SOURCE_BYTES) }.getOrNull()
                                 if (bytes != null && bytes.isNotEmpty()) {
                                     bestName = entry.name
                                     bestBytes = bytes
@@ -763,8 +801,14 @@ object LocalGalleryScanner {
      * 为非 E-Hentai 元数据归档生成稳定的 64 位负数 GID（基于规范化完整路径 SHA-256），
      * 彻底隔离真实 E-Hentai 正整数 GID 空间，避免同名/年份前缀归档互相碰撞覆盖。
      */
-    internal fun stableLocalArchiveGid(canonicalFilePath: String): Long {
-        val digest = MessageDigest.getInstance("SHA-256").digest(canonicalFilePath.toByteArray(Charsets.UTF_8))
+    internal fun stableLocalArchiveGid(canonicalFilePath: String): Long =
+        stableNegativeGid(canonicalFilePath)
+
+    internal fun stableLocalDirGid(canonicalDirPath: String): Long =
+        stableNegativeGid("dir:$canonicalDirPath")
+
+    private fun stableNegativeGid(key: String): Long {
+        val digest = MessageDigest.getInstance("SHA-256").digest(key.toByteArray(Charsets.UTF_8))
         val positive = ByteBuffer.wrap(digest, 0, 8).long and Long.MAX_VALUE
         return -positive - 1L
     }
@@ -816,17 +860,20 @@ object LocalGalleryScanner {
         val comic = entries.firstOrNull { it.name == COMIC_INFO_FILE }?.let { readComicInfo(it) }
         val parsed = comic?.web?.let { GalleryDetailUrlParser.parse(it) }
 
-        // 旧版或第三方目录可能以 "gid-token"、"gid_token" 或 "gid-标题" 命名
+        // 旧版或第三方目录可能以 "gid-token"、"gid_token" 或 "gid-标题" 命名；年份等短数字前缀目录走稳定负数 GID
         val folderName = dir.name
-        val folderGid = folderName.substringBefore('-').toLongOrNull()
-            ?: folderName.substringBefore('_').toLongOrNull()
+        val gid = resolveFolderGid(
+            folderName = folderName,
+            spiderGid = spider?.gid,
+            parsedGid = parsed?.gid,
+            canonicalDirPath = canonicalPath(dir),
+        )
         val rawFolderSuffix = folderName.substringAfter('-', "")
             .ifBlank { folderName.substringAfter('_', "") }
-        val gid = spider?.gid ?: parsed?.gid ?: folderGid ?: return null
         // 仅当目录后缀为规范 10 位十六进制 token 时才采纳，防止把 "[Ka..." 等标题片段误存为假 token
         val token = spider?.token?.takeIf { it.isNotBlank() }
             ?: parsed?.token?.takeIf { it.isNotBlank() }
-            ?: rawFolderSuffix.takeIf(::isValidGalleryHexToken)
+            ?: rawFolderSuffix.takeIf { gid > 0L && isValidGalleryHexToken(it) }
             ?: ""
 
         // 单次复用已列出的目录条目筛选自然排序真实图片，消除重复目录遍历与文件 stat
@@ -845,7 +892,8 @@ object LocalGalleryScanner {
         val pages = actualPages
 
         val info = BaseGalleryInfo(gid, token).apply {
-            title = cleanTitle(comic?.series?.takeIf { it.isNotBlank() } ?: folderName)
+            title = comic?.series?.takeIf { it.isNotBlank() }?.let(::cleanTitle)
+                ?: if (gid > 0L) cleanTitle(folderName) else folderName
             titleJpn = comic?.alternateSeries?.takeIf { it.isNotBlank() }
             comic?.communityRating?.toFloatOrNull()?.let { rating = it }
             comic?.languageISO?.takeIf { it.isNotBlank() }?.let { simpleLanguage = it }
@@ -884,8 +932,7 @@ object LocalGalleryScanner {
             file.readBytes()
         } else {
             ParcelFileDescriptor.AutoCloseInputStream(path.openFileDescriptor("r")).use { input ->
-                val bytes = input.readBytes()
-                bytes.takeIf { it.size.toLong() <= maxBytes }
+                readStreamBytesLimited(input, maxBytes)
             }
         }
     }.getOrNull()
@@ -936,6 +983,51 @@ internal data class ImportTarget(
     val label: String?,
     val isInsideAppDownloadDir: Boolean,
 )
+
+private const val MIN_FOLDER_GALLERY_GID = 10_000L
+
+/**
+ * 解析本地目录对应的画廊 GID：
+ * - 优先使用 `.ehviewer` 或 `ComicInfo.xml` 中明确记录的 E-Hentai GID；
+ * - 对无元数据的纯目录名，仅当 `-` / `_` 前缀为至少 5 位（>= 10000）的纯数字时视为 E-Hentai GID，
+ *   避免把 `2023-05 旅行`、`001-合集` 等年份或编号前缀误判为线上画廊 GID；
+ * - 其余目录分配基于规范化目录路径的稳定负数本地 GID。
+ */
+internal fun resolveFolderGid(
+    folderName: String,
+    spiderGid: Long?,
+    parsedGid: Long?,
+    canonicalDirPath: String,
+): Long {
+    spiderGid?.takeIf { it > 0L }?.let { return it }
+    parsedGid?.takeIf { it > 0L }?.let { return it }
+    val dashCandidate = folderName.substringBefore('-').trim().toLongOrNull()
+    val underCandidate = folderName.substringBefore('_').trim().toLongOrNull()
+    val folderGid = dashCandidate ?: underCandidate
+    if (folderGid != null && folderGid >= MIN_FOLDER_GALLERY_GID) {
+        return folderGid
+    }
+    return LocalGalleryScanner.stableLocalDirGid(canonicalDirPath)
+}
+
+/**
+ * 有上限地读取输入流字节（不关闭原流，由调用方负责如 `ZipInputStream` 仅消费当前 entry），
+ * 防止 SAF 等未知长度流把超大单图或恶意载荷全量读入内存导致 OOM。
+ */
+internal fun readStreamBytesLimited(input: InputStream, maxBytes: Long): ByteArray? {
+    if (maxBytes <= 0L) return null
+    val output = ByteArrayOutputStream()
+    val buffer = ByteArray(8 * 1024)
+    var total = 0L
+    while (true) {
+        val read = input.read(buffer)
+        if (read <= 0) break
+        total += read
+        if (total > maxBytes) return null
+        output.write(buffer, 0, read)
+    }
+    return if (total > 0L) output.toByteArray() else null
+}
 
 private val GALLERY_HEX_TOKEN_REGEX = Regex("^[0-9a-fA-F]{10}$")
 

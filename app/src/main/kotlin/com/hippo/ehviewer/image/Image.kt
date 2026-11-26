@@ -159,14 +159,17 @@ class Image private constructor(image: CoilImage, private val src: ImageSource) 
             val image = when (src) {
                 is PathSource -> {
                     if (isAtLeastP && !isAtLeastU) {
-                        src.source.openFileDescriptor("rw").use {
+                        src.source.openFileDescriptor("r").use {
                             val fd = it.fd
                             if (isGif(fd)) {
-                                return bracketCase(
-                                    { mmap(fd)!! },
-                                    { buffer -> decode(byteBufferSource(buffer) { munmap(buffer).also { src.close() } }, checkExtraneousAds) },
-                                    { buffer, case -> if (case !is ExitCase.Completed) munmap(buffer) },
-                                )
+                                val mapped = mmap(fd)
+                                if (mapped != null) {
+                                    return bracketCase(
+                                        { mapped },
+                                        { buffer -> decode(byteBufferSource(buffer) { munmap(buffer).also { src.close() } }, checkExtraneousAds) },
+                                        { buffer, case -> if (case !is ExitCase.Completed) munmap(buffer) },
+                                    )
+                                }
                             }
                         }
                     }
