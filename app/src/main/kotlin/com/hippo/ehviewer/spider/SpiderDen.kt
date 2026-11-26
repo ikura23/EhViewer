@@ -309,20 +309,35 @@ class SpiderDen(val info: GalleryInfo) {
     }
 
     suspend fun archive() = saveAsCbz && downloadDir?.run {
-        resolve(archiveName).let { file ->
-            runCatching {
-                archiveTo(file)
-            }.onFailure {
-                file.delete()
-                logcat(it)
-            }.isFailure
-        }
+        val finalFile = resolve(archiveName)
+        val tempFile = resolve("$archiveName.tmp")
+        runCatching {
+            tempFile.delete()
+            archiveTo(tempFile)
+            val tempSize = tempFile.metadataOrNull()?.size
+            check(tempSize == null || tempSize > 0L) { "Empty archive produced for $archiveName" }
+            finalFile.delete()
+            val moved = runCatching { tempFile moveTo finalFile }.isSuccess
+            if (!moved) {
+                tempFile sendTo finalFile
+            }
+            val finalSize = finalFile.metadataOrNull()?.size
+            check(finalFile.exists()) { "Archive commit missing for $archiveName" }
+            if (tempSize != null && finalSize != null) {
+                check(finalSize == tempSize) { "Archive size mismatch: $finalSize != $tempSize" }
+            }
+            tempFile.delete()
+        }.onFailure {
+            runCatching { tempFile.delete() }
+            logcat(it)
+        }.isFailure
     } == true
 
     // Postpone this to `SpiderQueen.stop` because files may still be in use by reader
     suspend fun postArchive(): Boolean {
         val dir = downloadDir
-        val archived = saveAsCbz && dir?.find(archiveName) != null
+        val archive = dir?.find(archiveName)
+        val archived = saveAsCbz && archive != null && (archive.metadataOrNull()?.size ?: 1L) > 0L
         if (archived) {
             dir.list().parMap(concurrency = 10) {
                 if (it.name.matches(FileNameRegex)) {
@@ -353,7 +368,12 @@ class SpiderDen(val info: GalleryInfo) {
             closeable { f.source.openFileDescriptor("r") }.fd to perFilename(idx, f.type)
         }.run { plus(comicInfo.fd to COMIC_INFO_FILE) }.unzip()
         val arcFd = closeable { file.openFileDescriptor("rw") }
-        archiveFdBatch(fdBatch.toIntArray(), names.toTypedArray(), arcFd.fd, pages + 1)
+        check(archiveFdBatch(fdBatch.toIntArray(), names.toTypedArray(), arcFd.fd, pages + 1)) {
+            "Failed to archive CBZ to ${file.name}"
+        }
+        check((file.metadataOrNull()?.size ?: 1L) > 0L) {
+            "Empty CBZ archive written to ${file.name}"
+        }
     }
 
     suspend fun initDownloadDirIfExist() {

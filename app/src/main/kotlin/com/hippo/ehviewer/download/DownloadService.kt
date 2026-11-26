@@ -24,6 +24,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import androidx.collection.LongSparseArray
@@ -106,8 +107,13 @@ class DownloadService :
             }
 
             val wifiManager = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+            val wifiMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+            } else {
+                WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            }
             wifiLock = wifiManager.createWifiLock(
-                WifiManager.WIFI_MODE_FULL_HIGH_PERF,
+                wifiMode,
                 "$packageName:download",
             ).apply {
                 setReferenceCounted(false)

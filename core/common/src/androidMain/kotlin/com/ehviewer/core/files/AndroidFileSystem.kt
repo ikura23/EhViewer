@@ -12,6 +12,7 @@ import android.system.Int64Ref
 import android.system.Os
 import android.webkit.MimeTypeMap
 import androidx.core.database.getLongOrNull
+import java.nio.ByteBuffer
 import kotlinx.io.asSink
 import kotlinx.io.asSource
 import okio.FileHandle
@@ -53,20 +54,58 @@ class AndroidFileSystem(context: Context) : FileSystem() {
 
     override fun copy(source: Path, target: Path) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            source.openFileDescriptor("r").use { src ->
+            val sentAll = source.openFileDescriptor("r").use { src ->
                 target.openFileDescriptor("wt").use { dst ->
                     try {
-                        Os.sendfile(dst.fileDescriptor, src.fileDescriptor, Int64Ref(0), Long.MAX_VALUE)
-                        return
-                    } catch (_: ErrnoException) {}
+                        val expectedSize = Os.fstat(src.fileDescriptor).st_size
+                        val offset = Int64Ref(0)
+                        var total = 0L
+                        while (expectedSize < 0L || total < expectedSize) {
+                            val remaining = if (expectedSize >= 0L) {
+                                minOf(expectedSize - total, MAX_SENDFILE_CHUNK)
+                            } else {
+                                MAX_SENDFILE_CHUNK
+                            }
+                            val written = Os.sendfile(dst.fileDescriptor, src.fileDescriptor, offset, remaining)
+                            if (written <= 0L) break
+                            total += written
+                        }
+                        expectedSize >= 0L && total == expectedSize
+                    } catch (_: ErrnoException) {
+                        false
+                    }
                 }
             }
+            if (sentAll) return
         }
 
-        // Fallback to transferTo if sendfile is not available or fails
+        // sendfile 不可用或部分复制时回退 FileChannel 循环复制到 EOF 并校验总字节数
         source.inputStream().use { src ->
             target.outputStream().use { dst ->
-                src.channel.transferTo(0, Long.MAX_VALUE, dst.channel)
+                val srcChannel = src.channel
+                val dstChannel = dst.channel
+                val expectedSize = srcChannel.size()
+                var position = 0L
+                val fallbackBuffer = lazy(LazyThreadSafetyMode.NONE) { ByteBuffer.allocate(64 * 1024) }
+                while (position < expectedSize) {
+                    val transferred = srcChannel.transferTo(position, expectedSize - position, dstChannel)
+                    if (transferred > 0L) {
+                        position += transferred
+                    } else {
+                        val buffer = fallbackBuffer.value
+                        buffer.clear()
+                        val read = srcChannel.read(buffer)
+                        if (read <= 0) break
+                        buffer.flip()
+                        while (buffer.hasRemaining()) {
+                            position += dstChannel.write(buffer)
+                        }
+                    }
+                }
+                dstChannel.force(false)
+                if (position != expectedSize) {
+                    throw IOException("Incomplete copy from $source to $target: $position != $expectedSize")
+                }
             }
         }
     }
@@ -170,9 +209,9 @@ class AndroidFileSystem(context: Context) : FileSystem() {
             val uri = path.toUri()
             val isMediaUri = uri.authority == MediaStore.AUTHORITY
             val projection = if (isMediaUri) {
-                arrayOf(MediaStore.MediaColumns.MIME_TYPE, MediaStore.MediaColumns.DATE_MODIFIED)
+                arrayOf(MediaStore.MediaColumns.MIME_TYPE, MediaStore.MediaColumns.DATE_MODIFIED, MediaStore.MediaColumns.SIZE)
             } else {
-                arrayOf(Document.COLUMN_MIME_TYPE, Document.COLUMN_LAST_MODIFIED)
+                arrayOf(Document.COLUMN_MIME_TYPE, Document.COLUMN_LAST_MODIFIED, Document.COLUMN_SIZE)
             }
 
             contentResolver.query(uri, projection, null, null, null)?.use { c ->
@@ -180,11 +219,13 @@ class AndroidFileSystem(context: Context) : FileSystem() {
 
                 val mimeType = c.getString(0)
                 val lastModified = c.getLongOrNull(1)?.let { if (isMediaUri) it * 1000 else it }
+                val size = if (c.columnCount > 2) c.getLongOrNull(2)?.takeIf { it >= 0L } else null
                 val isDirectory = mimeType == Document.MIME_TYPE_DIR
 
                 FileMetadata(
                     isRegularFile = !isDirectory,
                     isDirectory = isDirectory,
+                    size = size,
                     lastModifiedAtMillis = lastModified,
                 )
             }
@@ -232,6 +273,8 @@ class AndroidFileSystem(context: Context) : FileSystem() {
 
     private fun Path.outputStream() = ParcelFileDescriptor.AutoCloseOutputStream(openFileDescriptor(this, "wt"))
 }
+
+private const val MAX_SENDFILE_CHUNK = 0x7ffff000L
 
 private fun Path.isPhysicalFile() = toString().startsWith('/')
 

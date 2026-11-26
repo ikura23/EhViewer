@@ -612,6 +612,46 @@ object DownloadManager : CoroutineScope {
      * 解决本地导入或旧条目退出详情页后仍显示 `UNKNOWN` 分类及“未知作者”的问题。
      */
     suspend fun syncGalleryMetadata(source: GalleryInfo): Boolean {
+        val (extractedTags, extractedArtists) = extractTagsAndArtists(source)
+        return commandResult {
+            val old = mAllInfoMap[source.gid] ?: return@commandResult false
+            if (!applyGalleryMetadataOwned(old, source, extractedTags, extractedArtists)) {
+                return@commandResult false
+            }
+            mutateAllInfoList { }
+            metadataRevision++
+            mutableNotifyFlow.emit(old)
+            true
+        }
+    }
+
+    /**
+     * 批量同步多本画廊元数据并在末尾只递增一次 `metadataRevision`，避免扫描补全期间频繁重建列表。
+     */
+    suspend fun syncGalleryMetadataBatch(sources: List<GalleryInfo>): Int {
+        if (sources.isEmpty()) return 0
+        val prepared = sources.map { source ->
+            val (tags, artists) = extractTagsAndArtists(source)
+            Triple(source, tags, artists)
+        }
+        return commandResult {
+            val updated = mutableListOf<DownloadInfo>()
+            for ((source, tags, artists) in prepared) {
+                val old = mAllInfoMap[source.gid] ?: continue
+                if (applyGalleryMetadataOwned(old, source, tags, artists)) {
+                    updated += old
+                }
+            }
+            if (updated.isNotEmpty()) {
+                mutateAllInfoList { }
+                metadataRevision++
+                updated.forEach { mutableNotifyFlow.emit(it) }
+            }
+            updated.size
+        }
+    }
+
+    private fun extractTagsAndArtists(source: GalleryInfo): Pair<List<String>?, List<String>> {
         val extractedTags = if (source is GalleryDetail) {
             source.tagGroups.flatMap { group ->
                 val prefix = group.namespace.prefix ?: group.namespace.value
@@ -630,99 +670,101 @@ object DownloadManager : CoroutineScope {
         } else {
             extractArtistNames(extractedTags)
         }
+        return extractedTags to extractedArtists
+    }
 
-        return commandResult {
-            val old = mAllInfoMap[source.gid] ?: return@commandResult false
-            val entity = old.galleryInfo
-            var changed = false
-            var artistsChanged = false
+    private fun applyGalleryMetadataOwned(
+        old: DownloadInfo,
+        source: GalleryInfo,
+        extractedTags: List<String>?,
+        extractedArtists: List<String>,
+    ): Boolean {
+        val entity = old.galleryInfo
+        var changed = false
+        var artistsChanged = false
 
-            val newTitle = source.title?.takeIf { it.isNotBlank() }
-            if (newTitle != null && entity.title != newTitle) {
-                entity.title = newTitle
-                changed = true
-            }
-            val newTitleJpn = source.titleJpn?.takeIf { it.isNotBlank() }
-            if (newTitleJpn != null && entity.titleJpn != newTitleJpn) {
-                entity.titleJpn = newTitleJpn
-                changed = true
-            }
-            if (source.category != 0 && entity.category != source.category) {
-                entity.category = source.category
-                changed = true
-            }
-            val newUploader = source.uploader?.takeIf { it.isNotBlank() }
-            if (newUploader != null && entity.uploader != newUploader) {
-                entity.uploader = newUploader
-                changed = true
-            }
-            if (source.rating >= 0f && entity.rating != source.rating) {
-                entity.rating = source.rating
-                changed = true
-            }
-            val newPosted = source.posted?.takeIf { it.isNotBlank() }
-            if (newPosted != null && entity.posted != newPosted) {
-                entity.posted = newPosted
-                changed = true
-            }
-            val newThumbKey = source.thumbKey?.takeIf { it.isNotBlank() }
-            if (newThumbKey != null && entity.thumbKey != newThumbKey) {
-                // 优先保留/更新为包含 `/` 的远程 thumbKey，不让本地相对文件名反向覆盖远程 key
-                if ('/' in newThumbKey || entity.thumbKey.isNullOrBlank()) {
-                    entity.thumbKey = newThumbKey
-                    changed = true
-                }
-            }
-            if (source.thumbWidth > 0 && entity.thumbWidth != source.thumbWidth) {
-                entity.thumbWidth = source.thumbWidth
-                changed = true
-            }
-            if (source.thumbHeight > 0 && entity.thumbHeight != source.thumbHeight) {
-                entity.thumbHeight = source.thumbHeight
-                changed = true
-            }
-            if (!extractedTags.isNullOrEmpty() && entity.simpleTags != extractedTags) {
-                entity.simpleTags = extractedTags.toList()
-                changed = true
-            }
-            val newLang = source.simpleLanguage?.takeIf { it.isNotBlank() }
-            if (newLang != null && entity.simpleLanguage != newLang) {
-                entity.simpleLanguage = newLang
-                changed = true
-            }
-            if (entity.disowned != source.disowned) {
-                entity.disowned = source.disowned
-                changed = true
-            }
-            val targetPages = maxOf(entity.pages, source.pages)
-            if (targetPages > entity.pages) {
-                entity.pages = targetPages
-                changed = true
-            }
-            if (extractedArtists.isNotEmpty()) {
-                val oldArtists = old.artistInfoList.map { it.artist }
-                if (oldArtists != extractedArtists) {
-                    old.artistInfoList = DownloadArtist.from(old.gid, extractedArtists)
-                    artistsChanged = true
-                    changed = true
-                }
-            }
-
-            if (!changed) return@commandResult false
-
-            mutateAllInfoList { }
-            val snapshot = entity.toEntitySnapshot()
-            val artistsSnapshot = old.artistInfoList.toList()
-            persist {
-                EhDB.putGalleryInfo(snapshot)
-                if (artistsChanged) {
-                    EhDB.putDownloadArtist(old.gid, artistsSnapshot)
-                }
-            }
-            metadataRevision++
-            mutableNotifyFlow.emit(old)
-            true
+        val newTitle = source.title?.takeIf { it.isNotBlank() }
+        if (newTitle != null && entity.title != newTitle) {
+            entity.title = newTitle
+            changed = true
         }
+        val newTitleJpn = source.titleJpn?.takeIf { it.isNotBlank() }
+        if (newTitleJpn != null && entity.titleJpn != newTitleJpn) {
+            entity.titleJpn = newTitleJpn
+            changed = true
+        }
+        if (source.category != 0 && entity.category != source.category) {
+            entity.category = source.category
+            changed = true
+        }
+        val newUploader = source.uploader?.takeIf { it.isNotBlank() }
+        if (newUploader != null && entity.uploader != newUploader) {
+            entity.uploader = newUploader
+            changed = true
+        }
+        if (source.rating >= 0f && entity.rating != source.rating) {
+            entity.rating = source.rating
+            changed = true
+        }
+        val newPosted = source.posted?.takeIf { it.isNotBlank() }
+        if (newPosted != null && entity.posted != newPosted) {
+            entity.posted = newPosted
+            changed = true
+        }
+        val newThumbKey = source.thumbKey?.takeIf { it.isNotBlank() }
+        if (newThumbKey != null && entity.thumbKey != newThumbKey) {
+            // 优先保留/更新为包含 `/` 的远程 thumbKey，不让本地相对文件名反向覆盖远程 key
+            if ('/' in newThumbKey || entity.thumbKey.isNullOrBlank()) {
+                entity.thumbKey = newThumbKey
+                changed = true
+            }
+        }
+        if (source.thumbWidth > 0 && entity.thumbWidth != source.thumbWidth) {
+            entity.thumbWidth = source.thumbWidth
+            changed = true
+        }
+        if (source.thumbHeight > 0 && entity.thumbHeight != source.thumbHeight) {
+            entity.thumbHeight = source.thumbHeight
+            changed = true
+        }
+        if (!extractedTags.isNullOrEmpty() && entity.simpleTags != extractedTags) {
+            entity.simpleTags = extractedTags.toList()
+            changed = true
+        }
+        val newLang = source.simpleLanguage?.takeIf { it.isNotBlank() }
+        if (newLang != null && entity.simpleLanguage != newLang) {
+            entity.simpleLanguage = newLang
+            changed = true
+        }
+        if (entity.disowned != source.disowned) {
+            entity.disowned = source.disowned
+            changed = true
+        }
+        val targetPages = maxOf(entity.pages, source.pages)
+        if (targetPages > entity.pages) {
+            entity.pages = targetPages
+            changed = true
+        }
+        if (extractedArtists.isNotEmpty()) {
+            val oldArtists = old.artistInfoList.map { it.artist }
+            if (oldArtists != extractedArtists) {
+                old.artistInfoList = DownloadArtist.from(old.gid, extractedArtists)
+                artistsChanged = true
+                changed = true
+            }
+        }
+
+        if (!changed) return false
+
+        val snapshot = entity.toEntitySnapshot()
+        val artistsSnapshot = old.artistInfoList.toList()
+        persist {
+            EhDB.putGalleryInfo(snapshot)
+            if (artistsChanged) {
+                EhDB.putDownloadArtist(old.gid, artistsSnapshot)
+            }
+        }
+        return true
     }
 
     suspend fun attachLocalDirname(
@@ -891,6 +933,7 @@ object DownloadManager : CoroutineScope {
         mutateAllInfoList {
             it.removeAll(list.toSet())
         }
+        pruneManualOrderOwned(list.map { it.gid })
 
         // Update listener
         list.forEach { mutableNotifyFlow.emit(it) }
@@ -905,6 +948,15 @@ object DownloadManager : CoroutineScope {
     suspend fun registerUpgradeReplacement(newGid: Long, oldGid: Long) = command {
         if (newGid == oldGid) return@command
         upgradePrefs.edit().putLong(newGid.toString(), oldGid).apply()
+    }
+
+    /**
+     * 取消或回滚指定新版 GID 登记的旧版替换关系，确保用户选择「保留旧版」时绝不会误删旧版。
+     */
+    suspend fun clearUpgradeReplacement(newGid: Long) = command {
+        if (upgradePrefs.contains(newGid.toString())) {
+            upgradePrefs.edit().remove(newGid.toString()).apply()
+        }
     }
 
     private fun removeUpgradeMappingsFor(gid: Long) {
@@ -934,6 +986,7 @@ object DownloadManager : CoroutineScope {
             it.remove(info)
         }
         mAllInfoMap.remove(info.gid)
+        pruneManualOrderOwned(listOf(info.gid))
         mutableNotifyFlow.emit(info)
 
         if (info.isLocal) {
@@ -956,14 +1009,28 @@ object DownloadManager : CoroutineScope {
         it.sortWith(mode.comparator(manualOrderRanks))
     }
 
+    private fun pruneManualOrderOwned(removedGids: Collection<Long>) {
+        if (removedGids.isEmpty() || manualOrder.isEmpty()) return
+        val removedSet = removedGids.toHashSet()
+        val pruned = manualOrder.filterNot { it in removedSet }
+        if (pruned.size != manualOrder.size) {
+            manualOrder = pruned
+            manualOrderRanks = rebuildManualRanks(pruned)
+            saveManualOrder(pruned)
+        }
+    }
+
     /**
      * 更新并持久化用户手动拖拽排列的下载画廊顺序。
+     * 按当前全局自定义顺序（未排名新条目位于最前）构建基准顺序，避免首次拖拽时未出现的新条目沉底。
      */
     suspend fun updateManualOrder(visibleOrderedGids: List<Long>) = command {
         if (visibleOrderedGids.isEmpty()) return@command
-        val existingSet = manualOrder.toHashSet()
-        val baseOrder = manualOrder + allInfoList.map { it.gid }.filter { it !in existingSet }
-        val merged = mergeManualOrder(baseOrder, visibleOrderedGids)
+        val customComparator = SortMode(SortMode.Field.CUSTOM, SortMode.Order.ASC).comparator(manualOrderRanks)
+        val currentGlobalOrder = sortMutex.withLock {
+            allInfoList.sortedWith(customComparator).map { it.gid }
+        }
+        val merged = mergeManualOrder(currentGlobalOrder, visibleOrderedGids)
         manualOrder = merged
         manualOrderRanks = rebuildManualRanks(merged)
         saveManualOrder(merged)
@@ -972,7 +1039,6 @@ object DownloadManager : CoroutineScope {
                 list.sortWith(sortMode.comparator(manualOrderRanks))
             }
         }
-        metadataRevision++
     }
 
     suspend fun resetAllReadingProgress() = runCatching {

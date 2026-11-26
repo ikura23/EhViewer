@@ -32,10 +32,10 @@ import java.nio.ByteBuffer
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.asExecutor
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.consumeEach
-import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.job
 import kotlinx.coroutines.suspendCancellableCoroutine
 
@@ -62,7 +62,8 @@ class CronetEngine(override val config: CronetConfig) : HttpClientEngineBase("Cr
         val requestTime = GMTDate()
 
         val callback = object : UrlRequest.Callback {
-            val chunkChan = Channel<ByteBuffer>()
+            // 有界缓冲避免唯一单线程 executor 因消费端取消而被 trySendBlocking 永久阻塞死锁
+            val chunkChan = Channel<ByteBuffer>(capacity = 1)
             override fun onRedirectReceived(request: UrlRequest, info: UrlResponseInfo, newLocationUrl: String) {
                 continuation.resume(
                     info.toHttpResponseData(
@@ -78,14 +79,18 @@ class CronetEngine(override val config: CronetConfig) : HttpClientEngineBase("Cr
                         requestTime = requestTime,
                         callContext = callContext,
                         responseBody = writer(callContext.job) {
-                            pool.useInstance {
-                                request.read(it)
-                                chunkChan.consumeEach { buffer ->
-                                    buffer.flip()
-                                    channel.writeFully(buffer)
-                                    buffer.clear()
-                                    request.read(buffer)
+                            try {
+                                pool.useInstance {
+                                    request.read(it)
+                                    chunkChan.consumeEach { buffer ->
+                                        buffer.flip()
+                                        channel.writeFully(buffer)
+                                        buffer.clear()
+                                        request.read(buffer)
+                                    }
                                 }
+                            } finally {
+                                chunkChan.close()
                             }
                         }.channel,
                     ),
@@ -93,7 +98,9 @@ class CronetEngine(override val config: CronetConfig) : HttpClientEngineBase("Cr
             }
 
             override fun onReadCompleted(request: UrlRequest, info: UrlResponseInfo, byteBuffer: ByteBuffer) {
-                chunkChan.trySendBlocking(byteBuffer).getOrThrow()
+                if (!chunkChan.trySend(byteBuffer).isSuccess) {
+                    request.cancel()
+                }
             }
 
             override fun onSucceeded(request: UrlRequest, info: UrlResponseInfo) {
@@ -108,7 +115,13 @@ class CronetEngine(override val config: CronetConfig) : HttpClientEngineBase("Cr
                 }
             }
 
-            override fun onCanceled(request: UrlRequest, info: UrlResponseInfo?) = Unit
+            override fun onCanceled(request: UrlRequest, info: UrlResponseInfo?) {
+                val cancelCause = CancellationException("Cronet request canceled")
+                if (continuation.isActive) {
+                    continuation.cancel(cancelCause)
+                }
+                chunkChan.close(cancelCause)
+            }
         }
 
         client.newUrlRequestBuilder(data.url.toString(), executor, callback).apply {
@@ -119,7 +132,10 @@ class CronetEngine(override val config: CronetConfig) : HttpClientEngineBase("Cr
             data.body.toUploadDataProvider()?.let { setUploadDataProvider(it, executor) }
         }.build().apply {
             start()
-            callContext.job.invokeOnCompletion { cancel() }
+            callContext.job.invokeOnCompletion { cause ->
+                cancel()
+                callback.chunkChan.close(cause as? CancellationException)
+            }
         }
     }
 }

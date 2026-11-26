@@ -23,6 +23,8 @@
 #include <errno.h>
 #include <pthread.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <jni.h>
 #include <android/log.h>
@@ -454,37 +456,70 @@ Java_com_hippo_ehviewer_jni_ArchiveKt_releaseByteBuffer(JNIEnv *env, jclass thiz
     }
 }
 
-JNIEXPORT void JNICALL
+JNIEXPORT jboolean JNICALL
 Java_com_hippo_ehviewer_jni_ArchiveKt_archiveFdBatch(JNIEnv *env, jclass clazz, jintArray fd_batch, jobjectArray names, jint arc_fd, jint size) {
     EH_UNUSED(clazz);
+    if (size <= 0) {
+        return JNI_FALSE;
+    }
     struct archive *arc = archive_write_new();
+    struct archive_entry *entry = archive_entry_new();
+    if (!arc || !entry) {
+        if (entry) archive_entry_free(entry);
+        if (arc) archive_write_free(arc);
+        return JNI_FALSE;
+    }
     struct stat st;
     char buff[8192];
     jint fdBatch[size];
     (*env)->GetIntArrayRegion(env, fd_batch, 0, size, fdBatch);
-    archive_write_set_format_zip(arc);
-    archive_write_zip_set_compression_store(arc);
-    archive_write_open_fd(arc, arc_fd);
-    struct archive_entry *entry = archive_entry_new();
-    for (int i = 0; i < size; i++) {
+    bool ok = archive_write_set_format_zip(arc) == ARCHIVE_OK &&
+              archive_write_zip_set_compression_store(arc) == ARCHIVE_OK &&
+              archive_write_open_fd(arc, arc_fd) == ARCHIVE_OK;
+    for (int i = 0; ok && i < size; i++) {
         int fd = fdBatch[i];
         jobject name = (*env)->GetObjectArrayElement(env, names, i);
         const char *cname = (*env)->GetStringUTFChars(env, name, false);
         archive_entry_set_pathname(entry, cname);
         (*env)->ReleaseStringUTFChars(env, name, cname);
-        fstat(fd, &st);
+        (*env)->DeleteLocalRef(env, name);
+        if (fstat(fd, &st) != 0) {
+            ok = false;
+            break;
+        }
         archive_entry_copy_stat(entry, &st);
         archive_entry_set_perm(entry, 0644);
-        archive_write_header(arc, entry);
-        size_t len;
-        do {
-            len = read(fd, buff, sizeof(buff));
-            archive_write_data(arc, buff, len);
-        } while (len > 0);
-        archive_write_finish_entry(arc);
+        if (archive_write_header(arc, entry) != ARCHIVE_OK) {
+            ok = false;
+            break;
+        }
+        ssize_t len;
+        while ((len = read(fd, buff, sizeof(buff))) > 0) {
+            ssize_t offset = 0;
+            while (offset < len) {
+                la_ssize_t written = archive_write_data(arc, buff + offset, (size_t) (len - offset));
+                if (written <= 0) {
+                    ok = false;
+                    break;
+                }
+                offset += written;
+            }
+            if (!ok) break;
+        }
+        if (len < 0 || !ok) {
+            ok = false;
+            break;
+        }
+        if (archive_write_finish_entry(arc) != ARCHIVE_OK) {
+            ok = false;
+            break;
+        }
         archive_entry_clear(entry);
     }
     archive_entry_free(entry);
-    archive_write_close(arc);
+    if (archive_write_close(arc) != ARCHIVE_OK) {
+        ok = false;
+    }
     archive_write_free(arc);
+    return ok ? JNI_TRUE : JNI_FALSE;
 }

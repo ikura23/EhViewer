@@ -664,6 +664,10 @@ class SpiderQueen private constructor(val galleryInfo: GalleryInfo) : CoroutineS
                             is CancellationException, is FileNotFoundException -> throw it
                         }
                         error = it.displayString()
+                        // 后台网络瞬断时短暂退避再重试，避免连续 3 次立即撞墙耗尽重试次数
+                        if (retries < 2) {
+                            delay(1_500L * (retries + 1))
+                        }
                     }
                 }
             }.onFailure {

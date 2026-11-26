@@ -337,6 +337,7 @@ fun GalleryDetailContent(
                                     )
                                 }
                             }.onSuccess { newDetail ->
+                                DownloadManager.clearUpgradeReplacement(newDetail.gid)
                                 startDownload(false, newDetail.galleryInfo)
                             }.onFailure { error ->
                                 logcat(error)
@@ -376,6 +377,7 @@ fun GalleryDetailContent(
                             snackbar(if (launched) updateStartedBgText else updateRunningText)
                         }
                         onSelect(actionFullText) {
+                            DownloadManager.clearUpgradeReplacement(detail.gid)
                             startDownload(false, detail.galleryInfo)
                         }
                     }()

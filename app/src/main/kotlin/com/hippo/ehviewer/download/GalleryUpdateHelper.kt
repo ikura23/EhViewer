@@ -7,7 +7,9 @@ import com.ehviewer.core.files.exists
 import com.ehviewer.core.files.find
 import com.ehviewer.core.files.isFile
 import com.ehviewer.core.files.list
+import com.ehviewer.core.files.metadataOrNull
 import com.ehviewer.core.files.mkdirs
+import com.ehviewer.core.files.moveTo
 import com.ehviewer.core.files.read
 import com.ehviewer.core.files.sendTo
 import com.ehviewer.core.files.write
@@ -40,6 +42,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.io.asInputStream
+import moe.tarsin.coroutines.runSuspendCatching
 import okio.Path
 import splitties.init.appCtx
 
@@ -115,6 +118,7 @@ object GalleryUpdateTracker {
         scope.launch {
             var prepResult: IncrementalPrepareResult? = null
             var errorMsg: String? = null
+            var registeredNewGid: Long? = null
             try {
                 val targetInfo = preloadedTargetInfo ?: EhEngine.getGalleryDetail(
                     EhUrl.getGalleryDetailUrl(targetGid, targetToken),
@@ -136,6 +140,9 @@ object GalleryUpdateTracker {
                 prepResult = prep
                 if (replaceOld) {
                     DownloadManager.registerUpgradeReplacement(targetInfo.gid, oldInfo.gid)
+                    registeredNewGid = targetInfo.gid
+                } else {
+                    DownloadManager.clearUpgradeReplacement(targetInfo.gid)
                 }
                 _progress.update {
                     if (!it.running) it else it.copy(
@@ -153,6 +160,9 @@ object GalleryUpdateTracker {
                 }
             } catch (e: Throwable) {
                 logcat(TAG, e)
+                registeredNewGid?.let { gid ->
+                    runSuspendCatching { DownloadManager.clearUpgradeReplacement(gid) }
+                }
                 errorMsg = e.displayString()
             } finally {
                 synchronized(stateLock) {
@@ -346,7 +356,7 @@ private suspend fun fetchCompleteSpiderInfo(
 ): SpiderInfo {
     // 若账户开启了多页阅读器（MPV），直接单次请求获取全部 pToken，大幅缩短超长画廊等待时间
     if (EhUtils.isMpvAvailable) {
-        val mpvTokens = runCatching {
+        val mpvTokens = runSuspendCatching {
             EhEngine.getPTokenListFromMpv(gid, token)
         }.getOrNull()
         if (!mpvTokens.isNullOrEmpty()) {
@@ -401,7 +411,7 @@ private suspend fun loadOrFetchOldSpiderInfo(
         return localInfo
     }
     // 仅当本地已有散图在 .ehviewer 里缺页指纹，或旧版为压缩包时才补抓旧版目录（若旧版已被删档则回退本地）
-    return runCatching {
+    return runSuspendCatching {
         fetchCompleteSpiderInfo(oldInfo.gid, oldInfo.token)
     }.onFailure {
         logcat(TAG) { "Fallback to cached/local SpiderInfo for old gid=${oldInfo.gid}: ${it.message}" }
@@ -421,17 +431,50 @@ private fun indexDirectoryImages(dir: Path): Map<Int, Path> {
     return result
 }
 
-private fun copyPathSafely(src: Path, dest: Path): Boolean = runCatching {
-    val staging = dest.parent?.resolve("${dest.name}.copy.tmp") ?: return false
-    staging.delete()
-    src sendTo staging
+private fun commitStagedFile(staging: Path, dest: Path, expectedSize: Long?): Boolean = runCatching {
+    val stagedSize = staging.metadataOrNull()?.size
+    if (expectedSize != null) {
+        if (expectedSize <= 0L) return@runCatching false
+        if (stagedSize != null && stagedSize != expectedSize) return@runCatching false
+    } else if (stagedSize != null && stagedSize <= 0L) {
+        return@runCatching false
+    }
     dest.delete()
-    staging sendTo dest
-    staging.delete()
-    dest.exists()
+    val moved = runCatching { staging moveTo dest }.isSuccess
+    if (!moved) {
+        runCatching {
+            staging sendTo dest
+        }.onFailure {
+            runCatching { dest.delete() }
+            throw it
+        }
+    }
+    val destSize = dest.metadataOrNull()?.size
+    if (!dest.exists() || (expectedSize != null && destSize != null && destSize != expectedSize) || (destSize != null && destSize <= 0L)) {
+        runCatching { dest.delete() }
+        return@runCatching false
+    }
+    true
 }.onFailure {
+    runCatching { dest.delete() }
     logcat(TAG, it)
-}.getOrDefault(false)
+}.getOrDefault(false).also {
+    runCatching { staging.delete() }
+}
+
+private fun copyPathSafely(src: Path, dest: Path): Boolean {
+    val staging = dest.parent?.resolve("${dest.name}.copy.tmp") ?: return false
+    return runCatching {
+        val srcSize = src.metadataOrNull()?.size
+        if (srcSize != null && srcSize <= 0L) return@runCatching false
+        staging.delete()
+        src sendTo staging
+        commitStagedFile(staging, dest, srcSize)
+    }.onFailure {
+        runCatching { staging.delete() }
+        logcat(TAG, it)
+    }.getOrDefault(false)
+}
 
 private fun extractMatchingFromArchive(
     archiveFile: Path,
@@ -453,17 +496,19 @@ private fun extractMatchingFromArchive(
                             val firstTarget = targetDir.resolve(perFilename(newIndices[0], ext))
                             val staging = targetDir.resolve("${firstTarget.name}.copy.tmp")
                             staging.delete()
-                            staging.write {
-                                while (true) {
-                                    val read = zip.read(buffer)
-                                    if (read <= 0) break
-                                    write(buffer, 0, read)
+                            var writtenBytes = 0L
+                            val writeOk = runCatching {
+                                staging.write {
+                                    while (true) {
+                                        val read = zip.read(buffer)
+                                        if (read <= 0) break
+                                        write(buffer, 0, read)
+                                        writtenBytes += read
+                                    }
                                 }
-                            }
-                            firstTarget.delete()
-                            staging sendTo firstTarget
-                            staging.delete()
-                            if (firstTarget.exists()) {
+                                writtenBytes > 0L
+                            }.getOrDefault(false)
+                            if (writeOk && commitStagedFile(staging, firstTarget, writtenBytes)) {
                                 reusedTargets += newIndices[0]
                                 for (i in 1 until newIndices.size) {
                                     val dupTarget = targetDir.resolve(perFilename(newIndices[i], ext))
@@ -471,6 +516,8 @@ private fun extractMatchingFromArchive(
                                         reusedTargets += newIndices[i]
                                     }
                                 }
+                            } else {
+                                runCatching { staging.delete() }
                             }
                         }
                     }
