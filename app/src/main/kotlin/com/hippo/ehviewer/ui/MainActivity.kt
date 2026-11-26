@@ -80,6 +80,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfoV2
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.rememberDrawerState2
@@ -539,9 +540,12 @@ class MainActivity : AppCompatActivity() {
                                 }
                             }
                         }
-                        // 全局非阻塞后台扫描进度悬浮条：仅在用户主动触发且非阅读器画面展示，不影响浏览榜单或进入画廊
+                        // 非下载页、非阅读器画面时的全局扫描进度悬浮条（下载页内改为列表头部内嵌卡片，避免遮挡顶部搜索栏）
                         AnimatedVisibility(
-                            visible = scanProgress.running && scanProgress.lastRunUserInitiated && currentDestination?.route != ReaderScreenDestination.route,
+                            visible = scanProgress.running &&
+                                scanProgress.lastRunUserInitiated &&
+                                currentDestination?.route != ReaderScreenDestination.route &&
+                                currentDestination?.route != DownloadsScreenDestination.route,
                             enter = fadeIn() + slideInVertically { -it },
                             exit = fadeOut() + slideOutVertically { -it },
                             modifier = Modifier
@@ -576,10 +580,14 @@ class MainActivity : AppCompatActivity() {
                                         )
                                         Text(
                                             text = statusText,
+                                            modifier = Modifier.weight(1f),
                                             style = MaterialTheme.typography.labelLarge,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
                                         )
+                                        TextButton(onClick = LocalGalleryScanner::cancelScan) {
+                                            Text(text = stringResource(id = R.string.action_cancel))
+                                        }
                                     }
                                     Spacer(modifier = Modifier.height(6.dp))
                                     if (scanProgress.total > 0) {

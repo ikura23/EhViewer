@@ -52,6 +52,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Reorder
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularWavyProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -62,9 +63,11 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SwipeToDismissBoxDefaults
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.fork.SwipeToDismissBox
 import androidx.compose.material3.fork.SwipeToDismissBoxState
@@ -96,6 +99,9 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.dimensionResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import arrow.core.partially1
 import com.ehviewer.core.database.model.DownloadInfo
@@ -228,6 +234,37 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
                     Toast.LENGTH_SHORT,
                 ).show()
             }
+        }
+    }
+
+    fun triggerLocalScan() {
+        if (!LocalGalleryScanner.hasAllFilesAccess()) {
+            Toast.makeText(
+                appContext,
+                appResources.getString(R.string.download_scan_local_permission),
+                Toast.LENGTH_LONG,
+            ).show()
+            LocalGalleryScanner.openAllFilesAccessSettings(appContext)
+        } else {
+            val started = LocalGalleryScanner.launchScanInBackground(userInitiated = true)
+            Toast.makeText(
+                appContext,
+                appResources.getString(if (started) R.string.download_scan_started else R.string.download_scan_running),
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
+    }
+
+    fun triggerFolderScan() {
+        if (!LocalGalleryScanner.hasAllFilesAccess()) {
+            Toast.makeText(
+                appContext,
+                appResources.getString(R.string.download_scan_local_permission),
+                Toast.LENGTH_LONG,
+            ).show()
+            LocalGalleryScanner.openAllFilesAccessSettings(appContext)
+        } else {
+            folderScanLauncher.launch(null)
         }
     }
 
@@ -605,37 +642,14 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
                     text = { Text(text = stringResource(id = R.string.download_scan_local)) },
                     onClick = {
                         expanded = false
-                        if (!LocalGalleryScanner.hasAllFilesAccess()) {
-                            Toast.makeText(
-                                appContext,
-                                appResources.getString(R.string.download_scan_local_permission),
-                                Toast.LENGTH_LONG,
-                            ).show()
-                            LocalGalleryScanner.openAllFilesAccessSettings(appContext)
-                        } else {
-                            val started = LocalGalleryScanner.launchScanInBackground(userInitiated = true)
-                            Toast.makeText(
-                                appContext,
-                                appResources.getString(if (started) R.string.download_scan_started else R.string.download_scan_running),
-                                Toast.LENGTH_SHORT,
-                            ).show()
-                        }
+                        triggerLocalScan()
                     },
                 )
                 DropdownMenuItem(
                     text = { Text(text = stringResource(id = R.string.download_scan_folder)) },
                     onClick = {
                         expanded = false
-                        if (!LocalGalleryScanner.hasAllFilesAccess()) {
-                            Toast.makeText(
-                                appContext,
-                                appResources.getString(R.string.download_scan_local_permission),
-                                Toast.LENGTH_LONG,
-                            ).show()
-                            LocalGalleryScanner.openAllFilesAccessSettings(appContext)
-                        } else {
-                            folderScanLauncher.launch(null)
-                        }
+                        triggerFolderScan()
                     },
                 )
                 DropdownMenuItem(
@@ -715,6 +729,14 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
                     verticalItemSpacing = gridInterval,
                     horizontalArrangement = Arrangement.spacedBy(gridInterval),
                 ) {
+                    if (scanProgress.running && scanProgress.lastRunUserInitiated) {
+                        item(key = "local-scan-progress", span = StaggeredGridItemSpan.FullLine) {
+                            LocalScanProgressCard(
+                                progress = scanProgress,
+                                onCancel = LocalGalleryScanner::cancelScan,
+                            )
+                        }
+                    }
                     if (updateProgress.running) {
                         item(key = "gallery-update-progress", span = StaggeredGridItemSpan.FullLine) {
                             GalleryUpdateProgressCard(progress = updateProgress)
@@ -749,6 +771,14 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
                     contentPadding = realPadding,
                     verticalArrangement = Arrangement.spacedBy(dimensionResource(com.hippo.ehviewer.R.dimen.gallery_list_interval)),
                 ) {
+                    if (scanProgress.running && scanProgress.lastRunUserInitiated) {
+                        item(key = "local-scan-progress") {
+                            LocalScanProgressCard(
+                                progress = scanProgress,
+                                onCancel = LocalGalleryScanner::cancelScan,
+                            )
+                        }
+                    }
                     if (updateProgress.running) {
                         item(key = "gallery-update-progress") {
                             GalleryUpdateProgressCard(progress = updateProgress)
@@ -761,7 +791,7 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
                             info.gid,
                             enabled = isManualSort && !selectMode,
                             animateItemModifier = Modifier.thenIf(animateItems) { animateItem() },
-                        ) {
+                        ) { isDragging ->
                             val dragModifier = if (isManualSort && !selectMode) {
                                 Modifier.draggableHandle(
                                     onDragStarted = {
@@ -802,8 +832,9 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
                                     info = info,
                                     selectMode = selectMode,
                                     showProgress = showProgress,
-                                    thumbnailRefreshKey = invalidateKey,
+                                    thumbnailRefreshKey = info.thumbKey ?: info.dirname ?: Unit,
                                     dragHandleModifier = dragModifier,
+                                    isDragging = isDragging,
                                     modifier = Modifier.height(height),
                                     interactionSource = interactionSource,
                                 )
@@ -818,7 +849,7 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
             Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface), contentAlignment = Alignment.Center) {
                 CircularWavyProgressIndicator()
             }
-        } else if (list.isEmpty() && !updateProgress.running) {
+        } else if (list.isEmpty() && !updateProgress.running && !scanProgress.running) {
             Column(
                 modifier = Modifier.padding(realPadding).fillMaxSize(),
                 verticalArrangement = Arrangement.Center,
@@ -834,6 +865,15 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
                     text = stringResource(id = R.string.no_download_info),
                     style = MaterialTheme.typography.headlineMedium,
                 )
+                Spacer(modifier = Modifier.height(16.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Button(onClick = ::triggerLocalScan) {
+                        Text(text = stringResource(id = R.string.download_scan_local))
+                    }
+                    OutlinedButton(onClick = ::triggerFolderScan) {
+                        Text(text = stringResource(id = R.string.download_scan_folder))
+                    }
+                }
             }
         }
     }
@@ -923,6 +963,55 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
                         list.removeAll(infoList)
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LocalScanProgressCard(
+    progress: LocalGalleryScanner.ScanProgress,
+    onCancel: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val statusText = when (progress.stage) {
+        LocalGalleryScanner.ScanStage.FETCHING_METADATA -> stringResource(
+            R.string.download_scan_progress_metadata,
+            progress.scanned,
+            progress.total,
+        )
+        else -> stringResource(
+            R.string.download_scan_progress_scanning,
+            progress.scanned,
+            progress.total,
+        )
+    }
+    CrystalCard(
+        modifier = modifier
+            .fillMaxWidth()
+            .semantics { liveRegion = LiveRegionMode.Polite },
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = statusText,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                TextButton(onClick = onCancel) {
+                    Text(text = stringResource(id = R.string.action_cancel))
+                }
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+            if (progress.total > 0) {
+                LinearWavyProgressIndicator(
+                    progress = { (progress.scanned.toFloat() / progress.total).coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            } else {
+                LinearWavyProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
         }
     }

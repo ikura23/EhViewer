@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Environment
 import androidx.compose.animation.SharedTransitionScope
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -22,6 +24,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Reorder
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
@@ -44,6 +47,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
@@ -89,9 +94,23 @@ fun DownloadCard(
     showProgress: Boolean,
     thumbnailRefreshKey: Any = Unit,
     dragHandleModifier: Modifier? = null,
+    isDragging: Boolean = false,
     modifier: Modifier = Modifier,
     interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
-) = CrystalCard(modifier = modifier, onClick = onClick, onLongClick = onLongClick, interactionSource = interactionSource) {
+) {
+    val dragElevation by animateDpAsState(if (isDragging) 8.dp else 0.dp, label = "DragElevation")
+    CrystalCard(
+        modifier = modifier.shadow(dragElevation, CardDefaults.shape),
+        onClick = onClick,
+        onLongClick = onLongClick,
+        interactionSource = interactionSource,
+    ) {
+    val downloadState by DownloadManager.collectDownloadState(info.gid)
+    val readProgress by if (showProgress && downloadState == DownloadInfo.STATE_FINISH) {
+        remember(info.gid) { EhDB.getReadProgressFlow(info.gid) }.collectAsState(0)
+    } else {
+        remember { mutableIntStateOf(0) }
+    }
     Row {
         val thumb = remember {
             movableContentOf<DownloadInfo, Any> { item, refreshKey ->
@@ -133,18 +152,43 @@ fun DownloadCard(
                 }
             }
         }
+        val progressRatio = if (showProgress && downloadState == DownloadInfo.STATE_FINISH && info.pages > 0 && readProgress > 0) {
+            ((readProgress + 1).toFloat() / info.pages).coerceIn(0f, 1f)
+        } else {
+            0f
+        }
+        val thumbWithProgress: @Composable () -> Unit = {
+            Box(modifier = Modifier.aspectRatio(DEFAULT_RATIO).fillMaxSize()) {
+                thumb(info, thumbnailRefreshKey)
+                if (progressRatio > 0f) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .fillMaxWidth()
+                            .height(3.dp)
+                            .background(Color.Black.copy(alpha = 0.28f)),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(progressRatio)
+                                .height(3.dp)
+                                .background(MaterialTheme.colorScheme.primary),
+                        )
+                    }
+                }
+            }
+        }
         if (selectMode) {
             Card {
-                thumb(info, thumbnailRefreshKey)
+                thumbWithProgress()
             }
         } else {
             Card(onClick = onThumbClick) {
-                thumb(info, thumbnailRefreshKey)
+                thumbWithProgress()
             }
         }
         val stateFailed = stringResource(R.string.download_state_failed)
         val stateFailed2 = stringResource(R.string.download_state_failed_2, info.legacy)
-        val downloadState by DownloadManager.collectDownloadState(info.gid)
         Column(modifier = Modifier.padding(start = 8.dp, top = 2.dp, end = 4.dp)) {
             Text(
                 text = EhUtils.getSuitableTitle(info),
@@ -159,9 +203,8 @@ fun DownloadCard(
                     DownloadInfo.STATE_WAIT -> stringResource(R.string.download_state_wait)
                     DownloadInfo.STATE_FAILED -> if (info.legacy <= 0) stateFailed else stateFailed2
                     DownloadInfo.STATE_FINISH -> {
-                        if (showProgress) {
-                            val readProgress by remember { EhDB.getReadProgressFlow(info.gid) }.collectAsState(0)
-                            if (readProgress > 0) "${readProgress + 1}/${info.pages}P" else "${info.pages}P"
+                        if (showProgress && readProgress > 0) {
+                            "${readProgress + 1}/${info.pages}P"
                         } else {
                             "${info.pages}P"
                         }
@@ -238,27 +281,34 @@ fun DownloadCard(
                     DownloadInfo.STATE_FINISH -> Icons.Default.DownloadDone
                     else -> Icons.Default.PlayArrow
                 }
+                val actionDesc = when {
+                    downloadState == DownloadInfo.STATE_FINISH -> stringResource(R.string.download_state_finish)
+                    running -> stringResource(R.string.action_cancel)
+                    else -> stringResource(R.string.download)
+                }
+                val dragHandleDesc = stringResource(R.string.manual_order)
                 if (selectMode) {
                     Box(modifier = Modifier.offset(4.dp).minimumInteractiveComponentSize()) {
-                        Icon(imageVector = icon, contentDescription = null)
+                        Icon(imageVector = icon, contentDescription = actionDesc)
                     }
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = if (running) onStop else onStart, shapes = IconButtonDefaults.shapes(), modifier = Modifier.offset(4.dp)) {
-                            Icon(imageVector = icon, contentDescription = null)
+                            Icon(imageVector = icon, contentDescription = actionDesc)
                         }
                         if (dragHandleModifier != null) {
                             Box(
                                 modifier = dragHandleModifier.minimumInteractiveComponentSize(),
                                 contentAlignment = Alignment.Center,
                             ) {
-                                Icon(imageVector = Icons.Default.Reorder, contentDescription = null)
+                                Icon(imageVector = Icons.Default.Reorder, contentDescription = dragHandleDesc)
                             }
                         }
                     }
                 }
             }
         }
+    }
     }
 }
 
@@ -273,9 +323,19 @@ fun LocalDownloadThumb(
     modifier: Modifier = Modifier,
     fallbackContent: (@Composable () -> Unit)? = null,
 ) {
-    val thumbState by produceState<LocalThumbResult?>(null, info.gid, info.dirname, animatedOnly, thumbnailRefreshKey) {
-        value = withContext(Dispatchers.IO) {
+    val cacheKey = LocalThumbCacheKey(info.gid, info.dirname, animatedOnly)
+    val initialThumb = remember(cacheKey) { localThumbMemoryCache.get(cacheKey) }
+    val thumbState by produceState(initialThumb, info.gid, info.dirname, animatedOnly, thumbnailRefreshKey) {
+        val fresh = withContext(Dispatchers.IO) {
             resolveLocalThumb(info, animatedOnly)
+        }
+        if (fresh != null) {
+            localThumbMemoryCache.put(cacheKey, fresh)
+        } else {
+            localThumbMemoryCache.remove(cacheKey)
+        }
+        if (value != fresh) {
+            value = fresh
         }
     }
     val resolved = thumbState
@@ -296,12 +356,92 @@ fun LocalDownloadThumb(
     }
 }
 
-private data class LocalThumbResult(
+internal data class LocalThumbCacheKey(
+    val gid: Long,
+    val dirname: String?,
+    val animatedOnly: Boolean,
+)
+
+internal data class LocalThumbResult(
     val data: Any,
     val cacheKey: String,
 )
 
+internal class LocalThumbMemoryCache(private val maxEntries: Int = 256) {
+    private data class Entry(
+        val result: LocalThumbResult,
+        val lastModified: Long,
+        val fileLength: Long,
+    )
+
+    private val lock = Any()
+    private val map = object : LinkedHashMap<LocalThumbCacheKey, Entry>(maxEntries, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<LocalThumbCacheKey, Entry>?): Boolean =
+            size > maxEntries
+    }
+
+    fun get(key: LocalThumbCacheKey): LocalThumbResult? = synchronized(lock) {
+        val entry = map[key] ?: return null
+        val file = entry.result.data as? File
+        if (file != null && (!file.isFile || file.lastModified() != entry.lastModified || file.length() != entry.fileLength)) {
+            map.remove(key)
+            return null
+        }
+        entry.result
+    }
+
+    fun put(key: LocalThumbCacheKey, result: LocalThumbResult) {
+        val file = result.data as? File
+        val entry = Entry(
+            result = result,
+            lastModified = file?.lastModified() ?: -1L,
+            fileLength = file?.length() ?: -1L,
+        )
+        synchronized(lock) {
+            map[key] = entry
+        }
+    }
+
+    fun remove(key: LocalThumbCacheKey) {
+        synchronized(lock) {
+            map.remove(key)
+        }
+    }
+
+    fun size(): Int = synchronized(lock) { map.size }
+}
+
+internal val localThumbMemoryCache = LocalThumbMemoryCache()
+
 private const val MAX_ANIMATED_THUMB_BYTES = MAX_ANIMATED_PREVIEW_BYTES
+
+/**
+ * 按固定文件名 O(1) 探测压缩包缓存封面，避免每次卡片绑定执行 `listFiles()` 全目录遍历。
+ */
+internal fun findCachedArchiveThumb(
+    thumbDir: File,
+    cachePrefix: String,
+    animatedOnly: Boolean,
+    bitmapValidator: (File) -> Boolean = ::isUsableThumb,
+): File? {
+    for (ext in listOf("webp", "gif")) {
+        val animCandidate = File(thumbDir, "$cachePrefix.$ext")
+        if (animCandidate.isFile && animCandidate.length() > 0L && isAnimatedImageFile(animCandidate)) {
+            return animCandidate
+        }
+    }
+    if (animatedOnly) return null
+
+    for (ext in listOf("jpg", "jpeg", "png", "webp")) {
+        val candidate = File(thumbDir, "$cachePrefix.$ext")
+        if (!candidate.isFile) continue
+        if (candidate.length() > 0L && bitmapValidator(candidate)) {
+            return candidate
+        }
+        candidate.delete()
+    }
+    return null
+}
 
 private fun resolveLocalThumb(info: DownloadInfo, animatedOnly: Boolean): LocalThumbResult? = runCatching {
     var dir = info.downloadDir ?: return@runCatching null
@@ -338,33 +478,18 @@ private fun resolveLocalThumb(info: DownloadInfo, animatedOnly: Boolean): LocalT
     val physicalFile = File(dir.toString())
     val candidateFile: File? = if (physicalFile.isFile) {
         val cachePrefix = "${info.gid}-${dir.toString().hashCode().toUInt().toString(16)}"
-        val cachedAnim = AppConfig.localThumbDir.toFile().listFiles()?.firstOrNull {
-            it.nameWithoutExtension == cachePrefix &&
-                it.isFile &&
-                it.length() > 0L &&
-                it.extension.lowercase() in setOf("gif", "webp") &&
-                isAnimatedImageFile(it)
-        }
-        if (cachedAnim != null) {
-            cachedAnim
+        val cached = findCachedArchiveThumb(AppConfig.localThumbDir.toFile(), cachePrefix, animatedOnly)
+        if (cached != null) {
+            cached
         } else if (animatedOnly) {
             null
         } else {
-            val cached = AppConfig.localThumbDir.toFile().listFiles()
-                ?.firstOrNull {
-                    it.nameWithoutExtension == cachePrefix && it.isFile && it.length() > 0
-                }
-            if (cached != null && isUsableThumb(cached)) {
-                cached
+            val archiveThumb = File(archiveThumbPath(info.gid).toString())
+            if (archiveThumb.isFile && isUsableThumb(archiveThumb)) {
+                archiveThumb
             } else {
-                cached?.delete()
-                val archiveThumb = File(archiveThumbPath(info.gid).toString())
-                if (archiveThumb.isFile && isUsableThumb(archiveThumb)) {
-                    archiveThumb
-                } else {
-                    archiveThumb.delete()
-                    createArchiveThumb(physicalFile, info.gid, cachePrefix)
-                }
+                archiveThumb.delete()
+                createArchiveThumb(physicalFile, info.gid, cachePrefix)
             }
         }
     } else if (physicalFile.isDirectory) {

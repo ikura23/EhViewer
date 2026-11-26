@@ -43,7 +43,10 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -76,6 +79,7 @@ object LocalGalleryScanner {
     )
     private val stateLock = Any()
     private val failedMetadataCooldown = ConcurrentHashMap<Long, Long>()
+    private var activeScanJob: Job? = null
 
     enum class ScanStage {
         IDLE,
@@ -142,31 +146,46 @@ object LocalGalleryScanner {
                     lastRunUserInitiated = userInitiated,
                 )
             }
-        }
-        scanScope.launch {
-            var scanResult: Result? = null
-            try {
-                scanResult = scan(
-                    extraRoots = extraRoots,
-                    onlyConfiguredDownloadDir = onlyConfiguredDownloadDir,
-                )
-            } catch (e: Throwable) {
-                if (e is CancellationException) throw e
-                logcat(TAG, e)
-            } finally {
-                synchronized(stateLock) {
-                    _scanProgress.update { prev ->
-                        prev.copy(
-                            running = false,
-                            stage = ScanStage.IDLE,
-                            completedEventId = prev.completedEventId + 1,
-                            lastResult = scanResult,
-                        )
+            val job = scanScope.launch {
+                var scanResult: Result? = null
+                var cancelled = false
+                try {
+                    scanResult = scan(
+                        extraRoots = extraRoots,
+                        onlyConfiguredDownloadDir = onlyConfiguredDownloadDir,
+                    )
+                } catch (e: CancellationException) {
+                    cancelled = true
+                    throw e
+                } catch (e: Throwable) {
+                    logcat(TAG, e)
+                } finally {
+                    synchronized(stateLock) {
+                        activeScanJob = null
+                        _scanProgress.update { prev ->
+                            prev.copy(
+                                running = false,
+                                stage = ScanStage.IDLE,
+                                completedEventId = if (cancelled) prev.completedEventId else prev.completedEventId + 1,
+                                lastResult = if (cancelled) null else scanResult,
+                            )
+                        }
                     }
                 }
             }
+            activeScanJob = job
         }
         return true
+    }
+
+    /**
+     * 取消当前正在后台运行的本地画廊扫描任务。
+     */
+    fun cancelScan() {
+        synchronized(stateLock) {
+            activeScanJob?.cancel()
+            activeScanJob = null
+        }
     }
 
     fun resolveTreePath(uri: Uri): Path? = runCatching {
@@ -215,6 +234,7 @@ object LocalGalleryScanner {
                 val children = runCatching { currentDownloadDir.list() }.getOrDefault(emptyList())
                 updateScanningProgress(children.size)
                 for (entry in children) {
+                    currentCoroutineContext().ensureActive()
                     val isDir = runCatching { entry.isDirectory }.getOrDefault(false)
                     if (isDir) {
                         val subEntries = runCatching { entry.list() }.getOrNull() ?: continue
@@ -295,9 +315,11 @@ object LocalGalleryScanner {
                 val pending = ArrayDeque<Pair<Path, Int>>()
                 pending.addLast(root to 0)
                 while (pending.isNotEmpty()) {
+                    currentCoroutineContext().ensureActive()
                     val (dir, depth) = pending.removeLast()
                     val entries = runCatching { dir.list() }.getOrElse { continue }
                     for (entry in entries) {
+                        currentCoroutineContext().ensureActive()
                         val entryKey = canonicalPath(entry)
                         if (runCatching { entry.isDirectory }.getOrDefault(false)) {
                             val subEntries = runCatching { entry.list() }.getOrNull()
@@ -451,6 +473,7 @@ object LocalGalleryScanner {
         }
 
         for (batch in candidates.chunked(25)) {
+            currentCoroutineContext().ensureActive()
             val attemptTime = System.currentTimeMillis()
             val response = runSuspendCatching {
                 EhEngine.fillGalleryListByApi(batch, EhUrl.referer)
@@ -638,8 +661,13 @@ object LocalGalleryScanner {
     private fun ensureArchiveThumb(file: Path, gid: Long) {
         val cachePrefix = archiveThumbCachePrefix(file, gid)
         val cacheDir = AppConfig.localThumbDir.toFile()
-        val cached = cacheDir.listFiles()?.firstOrNull {
-            it.nameWithoutExtension == cachePrefix && it.isFile && it.length() > 0
+        var cached: File? = null
+        for (ext in listOf("webp", "gif", "jpg", "jpeg", "png")) {
+            val candidate = File(cacheDir, "$cachePrefix.$ext")
+            if (candidate.isFile && candidate.length() > 0L) {
+                cached = candidate
+                break
+            }
         }
         if (cached != null && (
                 cached.extension.lowercase() in setOf("gif", "webp") ||
