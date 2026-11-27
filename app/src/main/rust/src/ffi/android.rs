@@ -4,7 +4,7 @@ use super::jvm::jni_throwing;
 use crate::img::border::DetectBorder;
 use crate::img::core::{CustomPixel, ImageConsumer, Rgb565, Rgba8888, RgbaF16};
 use crate::img::qr_code::QrCode;
-use crate::img::webp::{decode_next_frame, get_image_info};
+use crate::img::webp::{copy_or_downscale_rgba, decode_frame_at_or_next, get_image_info, pack_frame_result};
 use anyhow::{Ok, Result, anyhow};
 use image::ImageBuffer;
 use jni::JNIEnv;
@@ -13,7 +13,7 @@ use jni::sys::{jboolean, jint, jintArray, jlong, jobject};
 use jni_fn::jni_fn;
 use libwebp_sys::WebPAnimDecoder;
 use ndk::bitmap::{Bitmap, BitmapFormat};
-use std::ptr::{copy_nonoverlapping, slice_from_raw_parts};
+use std::ptr::slice_from_raw_parts;
 
 #[jni_fn("com.hippo.ehviewer.image.ImageKt")]
 pub fn detectBorder(mut env: JNIEnv, _class: JClass, object: jobject) -> jintArray {
@@ -31,19 +31,37 @@ pub fn hasQrCode(mut env: JNIEnv, _class: JClass, object: jobject) -> jboolean {
 }
 
 #[jni_fn("com.hippo.ehviewer.coil.AnimatedWebPDrawableKt")]
-pub fn nativeDecodeNextFrame(mut env: JNIEnv, _: JClass, decoder: jlong, reset: jboolean, bitmap: jobject) -> jint {
+pub fn nativeDecodeNextFrame(
+    mut env: JNIEnv,
+    _: JClass,
+    decoder: jlong,
+    reset: jboolean,
+    target_ms: jint,
+    max_skip: jint,
+    bitmap: jobject,
+) -> jlong {
     jni_throwing(&mut env, |env| {
         let dec = decoder as *mut WebPAnimDecoder;
-        let (buf, timestamp) = unsafe { decode_next_frame(dec, reset != 0) };
+        let (buf, timestamp, wrapped) = unsafe { decode_frame_at_or_next(dec, reset != 0, target_ms, max_skip) };
         if !buf.is_null() {
             let info = unsafe { get_image_info(dec) };
             let handle = unsafe { Bitmap::from_jni(env.get_raw(), bitmap) };
+            let bm_info = handle.info()?;
             let dst = handle.lock_pixels()? as *mut u8;
-            let size = info.canvas_width * info.canvas_height * 4;
-            unsafe { copy_nonoverlapping(buf, dst, size as usize) };
+            unsafe {
+                copy_or_downscale_rgba(
+                    buf,
+                    info.canvas_width,
+                    info.canvas_height,
+                    dst,
+                    bm_info.width(),
+                    bm_info.height(),
+                    bm_info.stride() as usize,
+                );
+            }
             handle.unlock_pixels()?;
         }
-        Ok(timestamp)
+        Ok(pack_frame_result(timestamp, wrapped))
     })
 }
 

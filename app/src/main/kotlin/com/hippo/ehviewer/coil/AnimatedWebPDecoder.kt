@@ -11,13 +11,24 @@ import coil3.decode.ImageSource
 import coil3.fetch.SourceFetchResult
 import coil3.gif.isAnimatedWebP
 import coil3.request.Options
+import coil3.size.Dimension
 import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import okio.FileSystem
 
-class AnimatedWebPDecoder(private val source: ByteBuffer) : Decoder {
-    override suspend fun decode() = DecodeResult(AnimatedWebPDrawable(source).asImage(), false)
+/**
+ * WebP 动图解码器，会将目标绘制尺寸透传给 [AnimatedWebPDrawable] 以支持缩略图降采样。
+ */
+class AnimatedWebPDecoder(
+    private val source: ByteBuffer,
+    private val targetWidth: Int? = null,
+    private val targetHeight: Int? = null,
+) : Decoder {
+    override suspend fun decode() = DecodeResult(
+        AnimatedWebPDrawable(source, targetWidth, targetHeight).asImage(),
+        false,
+    )
 
     object Factory : Decoder.Factory {
         override fun create(
@@ -25,7 +36,11 @@ class AnimatedWebPDecoder(private val source: ByteBuffer) : Decoder {
             options: Options,
             imageLoader: ImageLoader,
         ) = if (DecodeUtils.isAnimatedWebP(result.source.source())) {
-            result.source.toByteBufferOrNull()?.let { AnimatedWebPDecoder(it) }
+            val targetWidth = (options.size.width as? Dimension.Pixels)?.px
+            val targetHeight = (options.size.height as? Dimension.Pixels)?.px
+            result.source.toByteBufferOrNull()?.let {
+                AnimatedWebPDecoder(it, targetWidth, targetHeight)
+            }
         } else {
             null
         }
