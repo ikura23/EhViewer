@@ -62,23 +62,32 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FormatListNumbered
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Style
 import androidx.compose.material.icons.filled.Whatshot
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerDefaults
 import androidx.compose.material3.DrawerState
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfoV2
@@ -145,6 +154,7 @@ import com.hippo.ehviewer.client.data.ListUrlBuilder
 import com.hippo.ehviewer.client.parser.GalleryDetailUrlParser
 import com.hippo.ehviewer.client.parser.GalleryPageUrlParser
 import com.hippo.ehviewer.collectAsState
+import com.hippo.ehviewer.download.DownloadManager
 import com.hippo.ehviewer.download.DownloadService
 import com.hippo.ehviewer.download.GalleryUpdateTracker
 import com.hippo.ehviewer.download.LocalGalleryScanner
@@ -152,6 +162,9 @@ import com.hippo.ehviewer.download.downloadLocation
 import com.hippo.ehviewer.download.ensureValidDownloadLocation
 import com.hippo.ehviewer.ui.destinations.DownloadScreenDestination
 import com.hippo.ehviewer.ui.destinations.DownloadsScreenDestination
+import com.hippo.ehviewer.ui.destinations.ExperimentalHotScreenDestination
+import com.hippo.ehviewer.ui.destinations.ExperimentalMeScreenDestination
+import com.hippo.ehviewer.ui.destinations.ExperimentalSearchScreenDestination
 import com.hippo.ehviewer.ui.destinations.FavouritesScreenDestination
 import com.hippo.ehviewer.ui.destinations.HistoryScreenDestination
 import com.hippo.ehviewer.ui.destinations.HomePageScreenDestination
@@ -162,6 +175,7 @@ import com.hippo.ehviewer.ui.destinations.SignInScreenDestination
 import com.hippo.ehviewer.ui.destinations.SubscriptionScreenDestination
 import com.hippo.ehviewer.ui.destinations.ToplistScreenDestination
 import com.hippo.ehviewer.ui.destinations.WhatshotScreenDestination
+import com.hippo.ehviewer.ui.experimental.shouldShowExperimentalBottomBar
 import com.hippo.ehviewer.ui.screen.asDst
 import com.hippo.ehviewer.ui.screen.asDstWith
 import com.hippo.ehviewer.ui.screen.navWithUrl
@@ -406,6 +420,8 @@ class MainActivity : AppCompatActivity() {
             val adaptiveInfo = currentWindowAdaptiveInfoV2()
             val needSignIn by Settings.needSignIn.collectAsState()
             val launchPage by Settings.launchPage.collectAsState()
+            val experimentalNewUi by Settings.experimentalNewUi.collectAsState()
+            val runningDownloads by DownloadManager.collectRunningCount()
             val scanProgress by LocalGalleryScanner.scanProgress.collectAsState()
             val updateProgress by GalleryUpdateTracker.progress.collectAsState()
             // 使用 rememberSaveable 记录已消费事件号，避免配置变化或重建 Activity 时重弹历史提示
@@ -441,6 +457,23 @@ class MainActivity : AppCompatActivity() {
                 }
                 snackbarState.showSnackbar(msg)
             }
+            val experimentalTopRoutes = remember {
+                setOf(
+                    HomePageScreenDestination.route,
+                    ExperimentalHotScreenDestination.route,
+                    WhatshotScreenDestination.route,
+                    ToplistScreenDestination.route,
+                    SubscriptionScreenDestination.route,
+                    ExperimentalSearchScreenDestination.route,
+                    DownloadsScreenDestination.route,
+                    ExperimentalMeScreenDestination.route,
+                )
+            }
+            val showBottomBar = shouldShowExperimentalBottomBar(
+                enabled = experimentalNewUi,
+                currentRoute = currentDestination?.route,
+                topLevelRoutes = experimentalTopRoutes,
+            )
             CompositionLocalProvider(
                 LocalNavDrawerState provides navDrawerState,
                 LocalSideSheetState provides sideSheetState,
@@ -450,6 +483,58 @@ class MainActivity : AppCompatActivity() {
                 LocalWindowSizeClass provides adaptiveInfo.windowSizeClass,
             ) {
                 Scaffold(
+                    bottomBar = {
+                        if (showBottomBar) {
+                            val currentRoute = currentDestination?.route
+                            NavigationBar {
+                                val tabs = listOf(
+                                    Triple(HomePageScreenDestination, R.string.nav_tab_home, Icons.Default.Home),
+                                    Triple(ExperimentalHotScreenDestination, R.string.nav_tab_hot, Icons.Default.Whatshot),
+                                    Triple(ExperimentalSearchScreenDestination, R.string.nav_tab_search, Icons.Default.Search),
+                                    Triple(DownloadsScreenDestination, R.string.nav_tab_downloads, Icons.Default.Download),
+                                    Triple(ExperimentalMeScreenDestination, R.string.nav_tab_me, Icons.Default.Person),
+                                )
+                                tabs.forEach { (direction, titleRes, icon) ->
+                                    val isHotSelected = direction == ExperimentalHotScreenDestination &&
+                                        currentRoute in setOf(
+                                            ExperimentalHotScreenDestination.route,
+                                            WhatshotScreenDestination.route,
+                                            ToplistScreenDestination.route,
+                                            SubscriptionScreenDestination.route,
+                                        )
+                                    val selected = isHotSelected || currentRoute == direction.route
+                                    NavigationBarItem(
+                                        selected = selected,
+                                        onClick = {
+                                            navigator.navigate(direction) {
+                                                launchSingleTop = true
+                                            }
+                                        },
+                                        icon = {
+                                            if (direction == DownloadsScreenDestination && runningDownloads > 0) {
+                                                BadgedBox(
+                                                    badge = {
+                                                        Badge { Text(text = runningDownloads.toString()) }
+                                                    },
+                                                ) {
+                                                    Icon(imageVector = icon, contentDescription = null)
+                                                }
+                                            } else {
+                                                Icon(imageVector = icon, contentDescription = null)
+                                            }
+                                        },
+                                        label = {
+                                            Text(
+                                                text = stringResource(id = titleRes),
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                    },
                     snackbarHost = {
                         SnackbarHost(
                             hostState = snackbarState,
@@ -460,11 +545,15 @@ class MainActivity : AppCompatActivity() {
                             },
                         )
                     },
-                ) {
+                ) { scaffoldPadding ->
                     var minOffset by remember {
                         mutableFloatStateOf(-with(density) { DrawerDefaults.MaximumDrawerWidth.toPx() })
                     }
-                    Box(modifier = Modifier.fillMaxSize()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(bottom = if (showBottomBar) scaffoldPadding.calculateBottomPadding() else 0.dp),
+                    ) {
                         ModalNavigationDrawer(
                             drawerContent = {
                                 ModalDrawerSheet(
@@ -500,11 +589,32 @@ class MainActivity : AppCompatActivity() {
                                                 },
                                             )
                                         }
+                                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                                        NavigationDrawerItem(
+                                            label = {
+                                                Text(text = stringResource(id = R.string.pref_experimental_new_ui))
+                                            },
+                                            selected = experimentalNewUi,
+                                            onClick = {
+                                                Settings.experimentalNewUi.value = !experimentalNewUi
+                                                closeDrawer()
+                                            },
+                                            modifier = Modifier.padding(horizontal = 12.dp),
+                                            icon = {
+                                                Icon(imageVector = Icons.Default.Style, contentDescription = null)
+                                            },
+                                            badge = {
+                                                Switch(
+                                                    checked = experimentalNewUi,
+                                                    onCheckedChange = null,
+                                                )
+                                            },
+                                        )
                                     }
                                 }
                             },
                             drawerState = navDrawerState,
-                            gesturesEnabled = drawerEnabled && sideSheetState.isClosed || navDrawerState.isOpen,
+                            gesturesEnabled = (!experimentalNewUi && drawerEnabled && sideSheetState.isClosed) || navDrawerState.isOpen,
                         ) {
                             val radius by remember {
                                 snapshotFlow {

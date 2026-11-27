@@ -150,7 +150,11 @@ data class ListUrlBuilder(
 
     fun build(): String = when (mode) {
         MODE_NORMAL, MODE_SUBSCRIPTION -> ehUrl(EhUrl.WATCHED_PATH.takeIf { mode == MODE_SUBSCRIPTION }) {
-            val category = if (!Settings.hasSignedIn.value && category <= 0) EhUtils.NON_H else category
+            val category = when {
+                Settings.nonHMode.value -> EhUtils.NON_H
+                !Settings.hasSignedIn.value && category <= 0 -> EhUtils.NON_H
+                else -> category
+            }
             if (category > 0) {
                 addQueryParameter("f_cats", "${EhUtils.invCategory(category)}")
             }
@@ -207,13 +211,26 @@ data class ListUrlBuilder(
             }
         }.buildString()
         MODE_UPLOADER, MODE_TAG -> {
-            val path = if (mode == MODE_UPLOADER) "uploader" else "tag"
-            ehUrl([path, requireNotNull(keyword)]) {
-                addQueryParameterIfNotBlank("prev", prev)
-                addQueryParameterIfNotBlank("next", next)
-                addQueryParameterIfNotBlank("seek", jumpTo)
-                addQueryParameterIfNotBlank("range", range.takeIf { it > 0 }?.toString())
-            }.buildString()
+            if (mode == MODE_TAG && Settings.nonHMode.value) {
+                val rawTag = requireNotNull(keyword).trim()
+                val formattedTag = if (' ' in rawTag && '"' !in rawTag) "\"$rawTag\"" else rawTag
+                ehUrl {
+                    addQueryParameter("f_cats", "${EhUtils.invCategory(EhUtils.NON_H)}")
+                    addQueryParameterIfNotBlank("f_search", formattedTag)
+                    addQueryParameterIfNotBlank("prev", prev)
+                    addQueryParameterIfNotBlank("next", next)
+                    addQueryParameterIfNotBlank("seek", jumpTo)
+                    addQueryParameterIfNotBlank("range", range.takeIf { it > 0 }?.toString())
+                }.buildString()
+            } else {
+                val path = if (mode == MODE_UPLOADER) "uploader" else "tag"
+                ehUrl([path, requireNotNull(keyword)]) {
+                    addQueryParameterIfNotBlank("prev", prev)
+                    addQueryParameterIfNotBlank("next", next)
+                    addQueryParameterIfNotBlank("seek", jumpTo)
+                    addQueryParameterIfNotBlank("range", range.takeIf { it > 0 }?.toString())
+                }.buildString()
+            }
         }
         MODE_WHATS_HOT -> EhUrl.popularUrl
         MODE_IMAGE_SEARCH -> ehUrl {

@@ -21,8 +21,27 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import moe.tarsin.coroutines.runSuspendCatching
 
-class GalleryListViewModel(lub: ListUrlBuilder, savedStateHandle: SavedStateHandle) : ViewModel() {
+/**
+ * 当标签列表顶部已置顶展示封面原作品时，从后续网络分页中排除同一画廊以免重复出现。
+ */
+internal fun excludePinnedGallery(
+    list: List<BaseGalleryInfo>,
+    pinnedGid: Long?,
+): List<BaseGalleryInfo> = if (pinnedGid == null) {
+    list
+} else {
+    list.filterNot { it.gid == pinnedGid }
+}
+
+class GalleryListViewModel(
+    lub: ListUrlBuilder,
+    savedStateHandle: SavedStateHandle,
+    initialPinnedGid: Long? = null,
+) : ViewModel() {
     private val mutex = Mutex()
+
+    @Volatile
+    var pinnedGalleryId: Long? = initialPinnedGid
 
     val urlBuilder by savedStateHandle.saved(MutableStateSerializer()) {
         mutableStateOf(lub)
@@ -49,7 +68,11 @@ class GalleryListViewModel(lub: ListUrlBuilder, savedStateHandle: SavedStateHand
                     runSuspendCatching {
                         EhEngine.getGalleryList(url)
                     }.foldToLoadResult { result ->
-                        LoadResult.Page(result.galleryInfoList, prev?.toString(), next?.toString())
+                        LoadResult.Page(
+                            excludePinnedGallery(result.galleryInfoList, pinnedGalleryId),
+                            prev?.toString(),
+                            next?.toString(),
+                        )
                     }
                 } else {
                     val url = mutex.withLock {
@@ -65,7 +88,11 @@ class GalleryListViewModel(lub: ListUrlBuilder, savedStateHandle: SavedStateHand
                     runSuspendCatching {
                         EhEngine.getGalleryList(url)
                     }.foldToLoadResult { result ->
-                        LoadResult.Page(result.galleryInfoList, result.prev, result.next)
+                        LoadResult.Page(
+                            excludePinnedGallery(result.galleryInfoList, pinnedGalleryId),
+                            result.prev,
+                            result.next,
+                        )
                     }
                 }
             }

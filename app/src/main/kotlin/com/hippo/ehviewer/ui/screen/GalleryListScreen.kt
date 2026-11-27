@@ -5,16 +5,25 @@ import android.view.ViewConfiguration
 import androidx.activity.compose.ReportDrawnWhen
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -24,16 +33,22 @@ import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Help
 import androidx.compose.material.icons.automirrored.filled.LastPage
+import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Reorder
 import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.Whatshot
 import androidx.compose.material.icons.outlined.Bookmarks
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.SwipeToDismissBoxDefaults
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
@@ -61,6 +76,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringArrayResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.fastForEach
 import androidx.lifecycle.createSavedStateHandle
@@ -71,6 +87,7 @@ import arrow.core.raise.ensure
 import arrow.core.raise.ensureNotNull
 import com.ehviewer.core.database.model.QuickSearch
 import com.ehviewer.core.i18n.R
+import com.ehviewer.core.model.BaseGalleryInfo
 import com.ehviewer.core.ui.component.FAB_ANIMATE_TIME
 import com.ehviewer.core.ui.component.FabLayout
 import com.ehviewer.core.ui.component.FastScrollLazyColumn
@@ -106,6 +123,7 @@ import com.hippo.ehviewer.collectAsState
 import com.hippo.ehviewer.ui.DrawerHandle
 import com.hippo.ehviewer.ui.Screen
 import com.hippo.ehviewer.ui.awaitSelectDate
+import com.hippo.ehviewer.ui.destinations.FavouritesScreenDestination
 import com.hippo.ehviewer.ui.destinations.ProgressScreenDestination
 import com.hippo.ehviewer.ui.doGalleryInfoAction
 import com.hippo.ehviewer.ui.main.AdvancedSearchOption
@@ -154,10 +172,12 @@ fun AnimatedVisibilityScope.ToplistScreen(navigator: DestinationsNavigator) = Ga
 fun AnimatedVisibilityScope.GalleryListScreen(
     lub: ListUrlBuilder,
     navigator: DestinationsNavigator,
-    viewModel: GalleryListViewModel = viewModel { GalleryListViewModel(lub, createSavedStateHandle()) },
+    pinnedGallery: BaseGalleryInfo? = null,
+    viewModel: GalleryListViewModel = viewModel { GalleryListViewModel(lub, createSavedStateHandle(), pinnedGallery?.gid) },
 ) = Screen(navigator) {
     val searchFieldState = rememberTextFieldState()
     var urlBuilder by viewModel.urlBuilder
+    var activePinnedGallery by remember(pinnedGallery) { mutableStateOf(pinnedGallery) }
     var searchBarExpanded by rememberSaveable { mutableStateOf(false) }
     var searchBarOffsetY by remember { mutableIntStateOf(0) }
     var fabExpanded by remember { mutableStateOf(false) }
@@ -195,7 +215,8 @@ fun AnimatedVisibilityScope.GalleryListScreen(
     val data = viewModel.data.collectAsLazyPagingItems()
     ReportDrawnWhen { data.loadState.refresh !is LoadState.Loading }
     FavouriteStatusRouter.Observe(data)
-    val listMode by Settings.listMode.collectAsState()
+    var listMode by Settings.listMode.asMutableState()
+    val experimentalNewUi by Settings.experimentalNewUi.collectAsState()
 
     val entries = stringArrayResource(id = com.hippo.ehviewer.R.array.toplist_entries)
     val values = stringArrayResource(id = com.hippo.ehviewer.R.array.toplist_values)
@@ -372,6 +393,8 @@ fun AnimatedVisibilityScope.GalleryListScreen(
                                             }
                                             navigate(builder.asDst())
                                         } else {
+                                            activePinnedGallery = null
+                                            viewModel.pinnedGalleryId = null
                                             urlBuilder = ListUrlBuilder(item).apply {
                                                 language = languageFilter
                                             }
@@ -464,6 +487,8 @@ fun AnimatedVisibilityScope.GalleryListScreen(
                 withUIContext { navigate(builder.asDst()) }
             }
             else -> {
+                activePinnedGallery = null
+                viewModel.pinnedGalleryId = null
                 urlBuilder = builder
                 data.refresh()
             }
@@ -490,6 +515,27 @@ fun AnimatedVisibilityScope.GalleryListScreen(
         localSearch = false,
         searchBarOffsetY = { searchBarOffsetY },
         trailingIcon = {
+            if (experimentalNewUi) {
+                IconButton(
+                    onClick = { listMode = if (listMode == 0) 1 else 0 },
+                    shapes = IconButtonDefaults.shapes(),
+                ) {
+                    Icon(
+                        imageVector = if (listMode == 0) Icons.Default.GridView else Icons.AutoMirrored.Default.ViewList,
+                        contentDescription = null,
+                    )
+                }
+                IconButton(
+                    onClick = { navigate(FavouritesScreenDestination) },
+                    shapes = IconButtonDefaults.shapes(),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Favorite,
+                        contentDescription = stringResource(id = R.string.favourite),
+                        tint = androidx.compose.material3.MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
             val sheetState = LocalSideSheetState.current
             IconButton(onClick = { launch { sheetState.open() } }, shapes = IconButtonDefaults.shapes()) {
                 Icon(imageVector = Icons.Outlined.Bookmarks, contentDescription = stringResource(id = R.string.quick_search))
@@ -526,6 +572,51 @@ fun AnimatedVisibilityScope.GalleryListScreen(
                 }
             }
         }
+        val pinnedHeaderBlock: (@Composable () -> Unit)? = activePinnedGallery?.let { pinned ->
+            {
+                Surface(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth().padding(6.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Whatshot,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(15.dp),
+                            )
+                            Text(
+                                text = stringResource(R.string.search_pinned_cover_badge),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                text = stringResource(R.string.search_pinned_cover_hint),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        GalleryInfoListItem(
+                            onClick = { navigate(pinned.asDst()) },
+                            onLongClick = { launch { doGalleryInfoAction(pinned) } },
+                            info = pinned,
+                            showPages = showPages,
+                            showProgress = showProgress,
+                            modifier = Modifier.height(height),
+                        )
+                    }
+                }
+            }
+        }
         GalleryList(
             data = data,
             contentModifier = Modifier.nestedScroll(searchBarConnection),
@@ -553,6 +644,7 @@ fun AnimatedVisibilityScope.GalleryListScreen(
                 )
             },
             searchBarOffsetY = { searchBarOffsetY },
+            pinnedHeader = pinnedHeaderBlock,
             onRefresh = {
                 urlBuilder.setRange(0)
                 data.refresh()

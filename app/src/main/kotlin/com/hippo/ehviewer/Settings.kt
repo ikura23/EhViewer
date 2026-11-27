@@ -95,6 +95,8 @@ object Settings : DataStorePreferences(null) {
     val showJpnTitle = boolPref("show_jpn_title", false)
     val requestNews = boolPref("request_news", false).observed { updateWhenRequestNewsChanges() }
     val hideHvEvents = boolPref("hide_hv_events", false)
+    val nonHMode = boolPref("pref_non_h_mode", false)
+    val experimentalNewUi = boolPref("pref_experimental_new_ui", false)
 
     // Download
     val mediaScan = boolPref("media_scan", false).observed(::updateWhenKeepMediaStatusChanges)
@@ -152,7 +154,7 @@ object Settings : DataStorePreferences(null) {
     var clipboardTextHashCode by intPref("clipboard_text_hash_code", 0)
     var requestNewsTime by intPref("request_news_time", 0).observed { updateWhenRequestNewsChanges() }
     var lastDawnDays by intPref("last_dawn_days", 0)
-    var recentToplist by stringPref("recent_toplist", "11")
+    var recentToplist by stringPref("recent_toplist", "15")
     var defaultDownloadLabel by stringOrNullPref("default_download_label")
     var lastUpdateTime by longPref("last_update_time", BuildConfig.COMMIT_TIME)
 

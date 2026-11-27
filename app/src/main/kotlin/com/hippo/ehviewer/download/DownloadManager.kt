@@ -476,6 +476,22 @@ object DownloadManager : CoroutineScope {
         notifyFlow.transform { if (it.gid == info.gid) emit(transform(it)) }
     }.collectAsState(transform(info)).value
 
+    @Stable
+    @Composable
+    fun collectRunningCount(): State<Int> = remember {
+        notifyFlow.transform {
+            emit(
+                infoSnapshot.count {
+                    it.state == DownloadInfo.STATE_WAIT || it.state == DownloadInfo.STATE_DOWNLOAD
+                },
+            )
+        }
+    }.collectAsState(
+        infoSnapshot.count {
+            it.state == DownloadInfo.STATE_WAIT || it.state == DownloadInfo.STATE_DOWNLOAD
+        },
+    )
+
     suspend fun startAllDownload(deferred: Boolean = false) = command {
         val updateList = sortMutex.withLock {
             allInfoList.filter {

@@ -16,6 +16,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,6 +32,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.plus
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -38,6 +40,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
 import androidx.compose.foundation.lazy.staggeredgrid.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.material.icons.Icons
@@ -62,6 +65,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularWavyProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
@@ -197,6 +201,7 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
     val updateProgress by GalleryUpdateTracker.progress.collectAsState()
     val ignoredDuplicateKeys by DuplicateGalleryIgnoreStore.ignoredKeys.collectAsState()
     val showTagTranslations by Settings.showTagTranslations.collectAsState()
+    val experimentalNewUi by Settings.experimentalNewUi.collectAsState()
 
     LaunchedEffect(showTagTranslations, EhTagDatabase.initialized) {
         if (showTagTranslations && EhTagDatabase.translatable && !EhTagDatabase.initialized) {
@@ -673,6 +678,43 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
             switchLabel(label)
         }
     }
+    suspend fun openSortDialog() {
+        val oldMode = SortMode.from(sortMode)
+        val sortModes = appContext.resources.getStringArray(com.hippo.ehviewer.R.array.download_sort_modes).toList()
+        val (selected, checked) = awaitSelectItemWithCheckBox(
+            sortModes,
+            R.string.sort_by,
+            R.string.group_by_download_label,
+            SortMode.All.indexOfFirst { it.field == oldMode.field && it.order == oldMode.order },
+            oldMode.groupByDownloadLabel,
+        )
+        val mode = SortMode.All[selected].copy(groupByDownloadLabel = checked)
+        if (mode != oldMode) {
+            sortMode = mode.flag
+            if (mode.field == SortMode.Field.CUSTOM && gridView) {
+                gridView = false
+                Toast.makeText(
+                    appContext,
+                    appResources.getString(R.string.download_manual_sort_list_hint),
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+            isLoading = true
+            DownloadManager.sortDownloads(mode)
+            invalidateKey = !invalidateKey
+        }
+    }
+
+    suspend fun openFilterDialog() {
+        val downloadStates = appContext.resources.getStringArray(com.hippo.ehviewer.R.array.download_state).toList()
+        val state = awaitSingleChoice(
+            downloadStates,
+            filterState.state + 1,
+            R.string.download_filter,
+        ) - 1
+        filterState = filterState.copy(state = state)
+    }
+
     SearchBarScreen(
         onApplySearch = { filterState = filterState.copy(keyword = it) },
         expanded = searchBarExpanded,
@@ -791,6 +833,53 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
             navToReader(info.galleryInfo)
         }
 
+        val sideSheetState = LocalSideSheetState.current
+
+        @Composable
+        fun ExperimentalDownloadQuickBar() {
+            val downloadStates = remember { appContext.resources.getStringArray(com.hippo.ehviewer.R.array.download_state) }
+            val stateLabel = downloadStates.getOrElse(filterState.state + 1) { downloadStates.firstOrNull().orEmpty() }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(bottom = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilterChip(
+                    selected = filterState.label != null,
+                    onClick = { launch { sideSheetState.open() } },
+                    label = {
+                        Text(text = filterState.label ?: stringResource(R.string.download_labels))
+                    },
+                )
+                FilterChip(
+                    selected = filterState.state != -1,
+                    onClick = { launch { openFilterDialog() } },
+                    label = { Text(text = stateLabel) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.FilterList,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    },
+                )
+                FilterChip(
+                    selected = sortMode != SortMode.Default.flag,
+                    onClick = { launch { openSortDialog() } },
+                    label = { Text(text = stringResource(R.string.sort_by)) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Default.Sort,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    },
+                )
+            }
+        }
+
         Crossfade(targetState = gridView, label = "Downloads") { showGridView ->
             if (showGridView) {
                 val gridInterval = dimensionResource(com.hippo.ehviewer.R.dimen.gallery_grid_interval)
@@ -802,6 +891,11 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
                     verticalItemSpacing = gridInterval,
                     horizontalArrangement = Arrangement.spacedBy(gridInterval),
                 ) {
+                    if (experimentalNewUi && !selectMode) {
+                        item(key = "exp-download-quick-bar", span = StaggeredGridItemSpan.FullLine) {
+                            ExperimentalDownloadQuickBar()
+                        }
+                    }
                     if (scanProgress.running && scanProgress.lastRunUserInitiated) {
                         item(key = "local-scan-progress", span = StaggeredGridItemSpan.FullLine) {
                             LocalScanProgressCard(
@@ -858,6 +952,11 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
                     contentPadding = realPadding,
                     verticalArrangement = Arrangement.spacedBy(dimensionResource(com.hippo.ehviewer.R.dimen.gallery_list_interval)),
                 ) {
+                    if (experimentalNewUi && !selectMode) {
+                        item(key = "exp-download-quick-bar") {
+                            ExperimentalDownloadQuickBar()
+                        }
+                    }
                     if (scanProgress.running && scanProgress.lastRunUserInitiated) {
                         item(key = "local-scan-progress") {
                             LocalScanProgressCard(
@@ -1004,39 +1103,10 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
                 }
             }
             onClick(Icons.AutoMirrored.Default.Sort) {
-                val oldMode = SortMode.from(sortMode)
-                val sortModes = contextOf<Context>().resources.getStringArray(com.hippo.ehviewer.R.array.download_sort_modes).toList()
-                val (selected, checked) = awaitSelectItemWithCheckBox(
-                    sortModes,
-                    R.string.sort_by,
-                    R.string.group_by_download_label,
-                    SortMode.All.indexOfFirst { it.field == oldMode.field && it.order == oldMode.order },
-                    oldMode.groupByDownloadLabel,
-                )
-                val mode = SortMode.All[selected].copy(groupByDownloadLabel = checked)
-                if (mode != oldMode) {
-                    sortMode = mode.flag
-                    if (mode.field == SortMode.Field.CUSTOM && gridView) {
-                        gridView = false
-                        Toast.makeText(
-                            appContext,
-                            appResources.getString(R.string.download_manual_sort_list_hint),
-                            Toast.LENGTH_SHORT,
-                        ).show()
-                    }
-                    isLoading = true
-                    DownloadManager.sortDownloads(mode)
-                    invalidateKey = !invalidateKey
-                }
+                openSortDialog()
             }
             onClick(Icons.Default.FilterList) {
-                val downloadStates = contextOf<Context>().resources.getStringArray(com.hippo.ehviewer.R.array.download_state).toList()
-                val state = awaitSingleChoice(
-                    downloadStates,
-                    filterState.state + 1,
-                    R.string.download_filter,
-                ) - 1
-                filterState = filterState.copy(state = state)
+                openFilterDialog()
             }
         } else {
             onClick(Icons.Default.DoneAll, autoClose = false) {

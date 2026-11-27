@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.plus
@@ -82,6 +83,7 @@ fun GalleryList(
     thumbItemContent: @Composable (LazyStaggeredGridItemScope.(BaseGalleryInfo) -> Unit),
     searchBarOffsetY: () -> Int,
     scrollToTopOnRefresh: Boolean = true,
+    pinnedHeader: (@Composable () -> Unit)? = null,
     onRefresh: () -> Unit,
     onLoading: () -> Unit,
 ) {
@@ -115,6 +117,9 @@ fun GalleryList(
             is LoadState.Error -> state.error !is NoHitsFoundException
             is LoadState.NotLoading -> false
         }
+        val refreshStateValue = data.loadState.refresh
+        val showInlineRefreshLoading = pinnedHeader != null && refreshStateValue is LoadState.Loading && !isRefreshing
+        val showInlineRefreshError = pinnedHeader != null && refreshStateValue is LoadState.Error
         if (listMode == 0) {
             val columnWidth by collectDetailSizeAsState()
             FastScrollLazyVerticalGrid(
@@ -125,6 +130,11 @@ fun GalleryList(
                 verticalArrangement = Arrangement.spacedBy(dimensionResource(com.hippo.ehviewer.R.dimen.gallery_list_interval)),
                 horizontalArrangement = Arrangement.spacedBy(dimensionResource(com.hippo.ehviewer.R.dimen.gallery_list_interval)),
             ) {
+                if (pinnedHeader != null) {
+                    item(key = "pinned_header", span = { GridItemSpan(maxLineSpan) }) {
+                        pinnedHeader()
+                    }
+                }
                 items(
                     count = data.itemCount,
                     key = data.itemKey(key = { item -> item.gid }),
@@ -136,7 +146,24 @@ fun GalleryList(
                         PrefetchAround(data, index, 5) { imageRequest(it) }
                     }
                 }
-                if (showLoadStateIndicator) {
+                if (showInlineRefreshLoading) {
+                    item(key = "inline_refresh_loading", span = { GridItemSpan(maxLineSpan) }) {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            CircularWavyProgressIndicator()
+                        }
+                    }
+                } else if (showInlineRefreshError) {
+                    item(key = "inline_refresh_error", span = { GridItemSpan(maxLineSpan) }) {
+                        val err = refreshStateValue as LoadState.Error
+                        ErrorTip(
+                            modifier = Modifier.widthIn(max = 228.dp).clip(ShapeDefaults.Small).clickable { data.retry() },
+                            text = err.error.displayString(),
+                        )
+                    }
+                } else if (showLoadStateIndicator) {
                     item(span = { GridItemSpan(maxLineSpan) }) {
                         LoadStateIndicator(state = data.loadState.append) {
                             data.retry()
@@ -155,6 +182,11 @@ fun GalleryList(
                 verticalItemSpacing = gridInterval,
                 horizontalArrangement = Arrangement.spacedBy(gridInterval),
             ) {
+                if (pinnedHeader != null) {
+                    item(key = "pinned_header", span = StaggeredGridItemSpan.FullLine) {
+                        pinnedHeader()
+                    }
+                }
                 items(
                     count = data.itemCount,
                     key = data.itemKey(key = { item -> item.gid }),
@@ -166,7 +198,24 @@ fun GalleryList(
                         PrefetchAround(data, index, 10) { imageRequest(it) }
                     }
                 }
-                if (showLoadStateIndicator) {
+                if (showInlineRefreshLoading) {
+                    item(key = "inline_refresh_loading", span = StaggeredGridItemSpan.FullLine) {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            CircularWavyProgressIndicator()
+                        }
+                    }
+                } else if (showInlineRefreshError) {
+                    item(key = "inline_refresh_error", span = StaggeredGridItemSpan.FullLine) {
+                        val err = refreshStateValue as LoadState.Error
+                        ErrorTip(
+                            modifier = Modifier.widthIn(max = 228.dp).clip(ShapeDefaults.Small).clickable { data.retry() },
+                            text = err.error.displayString(),
+                        )
+                    }
+                } else if (showLoadStateIndicator) {
                     item(span = StaggeredGridItemSpan.FullLine) {
                         LoadStateIndicator(state = data.loadState.append) {
                             data.retry()
@@ -188,16 +237,18 @@ fun GalleryList(
                         thumbListState.scrollToItem(0)
                     }
                 }
-                Surface {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        CircularWavyProgressIndicator()
+                if (pinnedHeader == null) {
+                    Surface {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            CircularWavyProgressIndicator()
+                        }
                     }
                 }
             }
-            is LoadState.Error -> {
+            is LoadState.Error -> if (pinnedHeader == null) {
                 Surface {
                     ErrorTip(
                         modifier = Modifier.widthIn(max = 228.dp).clip(ShapeDefaults.Small).clickable { data.retry() },
@@ -205,7 +256,7 @@ fun GalleryList(
                     )
                 }
             }
-            is LoadState.NotLoading -> if (data.itemCount == 0) {
+            is LoadState.NotLoading -> if (data.itemCount == 0 && pinnedHeader == null) {
                 // Only for local favorites as empty gallery lists from network are treated as error
                 ErrorTip(modifier = Modifier.widthIn(max = 228.dp), text = stringResource(id = R.string.gallery_list_empty_hit))
             }

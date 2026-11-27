@@ -471,6 +471,8 @@ object EhEngine {
 
     private suspend fun MutableList<BaseGalleryInfo>.fillInfo(url: String, filter: Boolean = false) = with(EhFilter) {
         if (filter) removeAllSuspend { filterTitle(it) || filterUploader(it) }
+        // 全局 Non-H 模式兜底：拦截 /popular、/toplist.php 等服务端忽略 f_cats 的列表中非 Non-H 画廊
+        if (filter && Settings.nonHMode.value) removeAllSuspend { it.category != EhUtils.NON_H }
         val hasTags = any { !it.simpleTags.isNullOrEmpty() }
         val hasPages = any { it.pages != 0 }
         val hasRated = any { it.rated }

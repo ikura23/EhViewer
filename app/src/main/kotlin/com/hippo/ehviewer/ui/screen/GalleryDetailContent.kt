@@ -19,7 +19,9 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.plus
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -41,6 +43,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -391,67 +394,107 @@ fun GalleryDetailContent(
     }
 
     val previews = galleryDetail?.collectPreviewItems()
+    val experimentalNewUi by Settings.experimentalNewUi.collectAsState()
     when {
-        !windowSizeClass.isExpanded -> FastScrollLazyVerticalGrid(
-            columns = GridCells.Fixed(thumbColumns),
-            contentPadding = contentPadding,
-            modifier = modifier.padding(horizontal = keylineMargin),
-            horizontalArrangement = Arrangement.spacedBy(dimensionResource(id = com.hippo.ehviewer.R.dimen.strip_item_padding)),
-            verticalArrangement = Arrangement.spacedBy(dimensionResource(id = com.hippo.ehviewer.R.dimen.strip_item_padding_v)),
-        ) {
-            item(
-                key = "header",
-                span = { GridItemSpan(maxCurrentLineSpan) },
-                contentType = "header",
-            ) {
-                GalleryDetailHeaderCard(
-                    info = galleryInfo,
-                    onInfoCardClick = ::onGalleryInfoCardClick,
-                    onUploaderChipClick = ::onUploaderChipClick.partially1(galleryInfo),
-                    onBlockUploaderIconClick = ::showFilterUploaderDialog.partially1(galleryInfo),
-                    onCategoryChipClick = ::onCategoryChipClick,
-                    modifier = Modifier.fillMaxWidth().padding(vertical = keylineMargin),
-                )
+        !windowSizeClass.isExpanded -> Box(modifier = Modifier.fillMaxSize()) {
+            val effectivePadding = if (experimentalNewUi) {
+                contentPadding + PaddingValues(bottom = 84.dp)
+            } else {
+                contentPadding
             }
-            item(
-                key = "body",
-                span = { GridItemSpan(maxCurrentLineSpan) },
-                contentType = "body",
+            FastScrollLazyVerticalGrid(
+                columns = GridCells.Fixed(thumbColumns),
+                contentPadding = effectivePadding,
+                modifier = modifier.padding(horizontal = keylineMargin),
+                horizontalArrangement = Arrangement.spacedBy(dimensionResource(id = com.hippo.ehviewer.R.dimen.strip_item_padding)),
+                verticalArrangement = Arrangement.spacedBy(dimensionResource(id = com.hippo.ehviewer.R.dimen.strip_item_padding_v)),
             ) {
-                LocalPinnableContainer.current!!.run { remember { pin() } }
-                Column {
-                    Row {
+                item(
+                    key = "header",
+                    span = { GridItemSpan(maxCurrentLineSpan) },
+                    contentType = "header",
+                ) {
+                    GalleryDetailHeaderCard(
+                        info = galleryInfo,
+                        onInfoCardClick = ::onGalleryInfoCardClick,
+                        onUploaderChipClick = ::onUploaderChipClick.partially1(galleryInfo),
+                        onBlockUploaderIconClick = ::showFilterUploaderDialog.partially1(galleryInfo),
+                        onCategoryChipClick = ::onCategoryChipClick,
+                        modifier = Modifier.fillMaxWidth().padding(vertical = keylineMargin),
+                    )
+                }
+                item(
+                    key = "body",
+                    span = { GridItemSpan(maxCurrentLineSpan) },
+                    contentType = "body",
+                ) {
+                    LocalPinnableContainer.current!!.run { remember { pin() } }
+                    Column {
+                        if (!experimentalNewUi) {
+                            Row {
+                                FilledTonalButton(
+                                    onClick = ::onDownloadButtonClick,
+                                    shapes = ButtonDefaults.shapes(),
+                                    modifier = Modifier.padding(horizontal = 4.dp).weight(1F),
+                                ) {
+                                    Text(text = downloadButtonText, overflow = TextOverflow.Ellipsis, maxLines = 1)
+                                }
+                                Button(
+                                    onClick = ::onReadButtonClick,
+                                    shapes = ButtonDefaults.shapes(),
+                                    modifier = Modifier.padding(horizontal = 4.dp).weight(1F),
+                                ) {
+                                    Text(text = readButtonText, overflow = TextOverflow.Ellipsis, maxLines = 1)
+                                }
+                            }
+                        }
+                        if (getDetailError.isNotBlank()) {
+                            GalleryDetailErrorTip(error = getDetailError, onClick = onRetry)
+                        } else if (galleryDetail != null) {
+                            BelowHeader(galleryDetail, voteTag)
+                        } else {
+                            Box(
+                                modifier = Modifier.fillMaxSize().padding(keylineMargin),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                CircularWavyProgressIndicator()
+                            }
+                        }
+                    }
+                }
+                if (galleryDetail != null && previews != null) {
+                    galleryPreview(galleryDetail, previews, localPageFiles) { navToReader(galleryDetail.galleryInfo, it) }
+                }
+            }
+            if (experimentalNewUi) {
+                Surface(
+                    modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth(),
+                    tonalElevation = 3.dp,
+                    shadowElevation = 8.dp,
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .navigationBarsPadding()
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
                         FilledTonalButton(
                             onClick = ::onDownloadButtonClick,
                             shapes = ButtonDefaults.shapes(),
-                            modifier = Modifier.padding(horizontal = 4.dp).weight(1F),
+                            modifier = Modifier.weight(1f),
                         ) {
                             Text(text = downloadButtonText, overflow = TextOverflow.Ellipsis, maxLines = 1)
                         }
                         Button(
                             onClick = ::onReadButtonClick,
                             shapes = ButtonDefaults.shapes(),
-                            modifier = Modifier.padding(horizontal = 4.dp).weight(1F),
+                            modifier = Modifier.weight(1.4f),
                         ) {
                             Text(text = readButtonText, overflow = TextOverflow.Ellipsis, maxLines = 1)
                         }
                     }
-                    if (getDetailError.isNotBlank()) {
-                        GalleryDetailErrorTip(error = getDetailError, onClick = onRetry)
-                    } else if (galleryDetail != null) {
-                        BelowHeader(galleryDetail, voteTag)
-                    } else {
-                        Box(
-                            modifier = Modifier.fillMaxSize().padding(keylineMargin),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            CircularWavyProgressIndicator()
-                        }
-                    }
                 }
-            }
-            if (galleryDetail != null && previews != null) {
-                galleryPreview(galleryDetail, previews, localPageFiles) { navToReader(galleryDetail.galleryInfo, it) }
             }
         }
         else -> FastScrollLazyVerticalGrid(

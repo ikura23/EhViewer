@@ -40,4 +40,4 @@ infix fun Long.asDstPageTo(page: Int) = this to page
 
 infix fun Pair<Long, Int>.with(token: String) = GalleryDetailScreenDestination(TokenArgs(first, token, second))
 
-fun ListUrlBuilder.asDst() = GalleryListScreenDestination(this)
+fun ListUrlBuilder.asDst(pinnedGallery: BaseGalleryInfo? = null) = GalleryListScreenDestination(this, pinnedGallery = pinnedGallery)
