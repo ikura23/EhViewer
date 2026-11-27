@@ -1,10 +1,14 @@
 package com.hippo.ehviewer.ui.reader
 
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.snapping.SnapLayoutInfoProvider
+import androidx.compose.foundation.gestures.snapping.SnapPosition
+import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListLayoutInfo
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.CircularProgressIndicator
@@ -63,13 +67,18 @@ fun AnimatedPlaybackViewer(
     val scope = rememberCoroutineScope()
     val autoPageTurn by Settings.autoPageTurn.collectAsState()
     val autoPageTurnInterval by Settings.autoPageTurnInterval.collectAsState()
+    // 禁止长距离惯性滑飞：单次上下滑动最多吸附到相邻上一张或下一张，确保整页居中切换。
+    val snapLayoutInfoProvider = remember(lazyListState) {
+        SinglePageSnapLayoutInfoProvider(SnapLayoutInfoProvider(lazyListState, SnapPosition.Start))
+    }
+    val snapFlingBehavior = rememberSnapFlingBehavior(snapLayoutInfoProvider = snapLayoutInfoProvider)
 
     // 仅订阅当前展示页的状态，避免在大画廊里创建上百/上千个顶层协程监听触发全树高频重组。
     val currentStatus = pageLoader.pages.getOrNull(currentIndex)?.statusObserved
 
     // 初次挂载时确保列表滚到当前页，避免从 Pager 切换进来时被第 0 页覆盖进度。
     LaunchedEffect(pageLoader, lazyListState) {
-        if (lazyListState.firstVisibleItemIndex != currentIndex) {
+        if (lazyListState.firstVisibleItemIndex != currentIndex || lazyListState.firstVisibleItemScrollOffset != 0) {
             advancing.value = true
             try {
                 lazyListState.scrollToItem(currentIndex)
@@ -77,13 +86,29 @@ fun AnimatedPlaybackViewer(
                 advancing.value = false
             }
         }
-        snapshotFlow { lazyListState.firstVisibleItemIndex to lazyListState.isScrollInProgress }.collect { (index, scrolling) ->
+        snapshotFlow {
+            Triple(
+                lazyListState.layoutInfo.dominantVisibleItemIndex(currentIndex),
+                lazyListState.isScrollInProgress,
+                lazyListState.firstVisibleItemScrollOffset,
+            )
+        }.collect { (index, scrolling, offset) ->
             // Automatic advance already targets the next page; do not restart its animation.
             if (advancing.value) return@collect
-            if (!scrolling && index != currentIndex) {
-                advanceJob?.cancel()
-                currentIndex = index
-                playbackGeneration++
+            if (!scrolling) {
+                if (offset != 0 || lazyListState.firstVisibleItemIndex != index) {
+                    advancing.value = true
+                    try {
+                        lazyListState.scrollToItem(index)
+                    } finally {
+                        advancing.value = false
+                    }
+                }
+                if (index != currentIndex) {
+                    advanceJob?.cancel()
+                    currentIndex = index
+                    playbackGeneration++
+                }
             }
         }
     }
@@ -231,6 +256,7 @@ fun AnimatedPlaybackViewer(
         LazyColumn(
             state = lazyListState,
             userScrollEnabled = neighbors,
+            flingBehavior = snapFlingBehavior,
             modifier = Modifier.fillMaxSize(),
         ) {
             items(pageLoader.pages, key = { it.index }) { page ->
@@ -270,3 +296,38 @@ fun AnimatedPlaybackViewer(
 private const val PLAYBACK_READY_TIMEOUT_MILLIS = 45_000L
 private const val PLAYBACK_NEXT_TIMEOUT_MILLIS = 8_000L
 private const val PLAYBACK_PRELOAD_POLL_MILLIS = 200L
+
+/**
+ * 单页吸附提供器：将惯性预滑距离归零，使上下滑动只切换相邻上一页或下一页。
+ */
+internal class SinglePageSnapLayoutInfoProvider(
+    private val delegate: SnapLayoutInfoProvider,
+) : SnapLayoutInfoProvider {
+    override fun calculateApproachOffset(velocity: Float, decayOffset: Float): Float = 0f
+
+    override fun calculateSnapOffset(velocity: Float): Float = delegate.calculateSnapOffset(velocity)
+}
+
+/**
+ * 从当前可见项的像素占比中挑选显示面积最大的页索引，列表为空时回退至 [fallbackIndex]。
+ */
+internal fun resolveDominantVisiblePageIndex(
+    visibleItems: List<Pair<Int, Int>>,
+    fallbackIndex: Int,
+): Int = visibleItems.maxByOrNull { (_, visiblePx) -> visiblePx }?.first ?: fallbackIndex
+
+/**
+ * 计算当前列表视口内占据像素高度最多的一页索引。
+ */
+internal fun LazyListLayoutInfo.dominantVisibleItemIndex(fallback: Int): Int {
+    if (visibleItemsInfo.isEmpty()) return fallback
+    val start = viewportStartOffset
+    val end = viewportEndOffset
+    val pairs = visibleItemsInfo.map { item ->
+        val itemStart = item.offset
+        val itemEnd = item.offset + item.size
+        val visiblePx = (minOf(itemEnd, end) - maxOf(itemStart, start)).coerceAtLeast(0)
+        item.index to visiblePx
+    }
+    return resolveDominantVisiblePageIndex(pairs, fallback)
+}

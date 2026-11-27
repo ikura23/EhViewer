@@ -6,9 +6,14 @@ import android.view.ViewConfiguration
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -114,6 +119,8 @@ import com.ehviewer.core.ui.component.FastScrollLazyColumn
 import com.ehviewer.core.ui.component.FastScrollLazyVerticalStaggeredGrid
 import com.ehviewer.core.ui.component.LocalSideSheetState
 import com.ehviewer.core.ui.component.ProvideSideSheetContent
+import com.ehviewer.core.ui.component.RollingNumber
+import com.ehviewer.core.ui.component.RollingNumberPlaceholder
 import com.ehviewer.core.ui.icons.EhIcons
 import com.ehviewer.core.ui.icons.big.Download
 import com.ehviewer.core.ui.util.HapticFeedbackType
@@ -140,8 +147,12 @@ import com.hippo.ehviewer.download.DownloadsFilterMode
 import com.hippo.ehviewer.download.GalleryUpdateProgress
 import com.hippo.ehviewer.download.GalleryUpdateTracker
 import com.hippo.ehviewer.download.LocalGalleryScanner
+import com.hippo.ehviewer.download.DuplicateGalleryGroup
+import com.hippo.ehviewer.download.DuplicateGalleryIgnoreStore
 import com.hippo.ehviewer.download.SortMode
 import com.hippo.ehviewer.download.UpdateStage
+import com.hippo.ehviewer.download.canMergeOlderVersionToNewer
+import com.hippo.ehviewer.download.findDuplicateGalleryGroups
 import com.hippo.ehviewer.ui.DrawerHandle
 import com.hippo.ehviewer.ui.Screen
 import com.hippo.ehviewer.ui.confirmRemoveDownloadRange
@@ -184,6 +195,7 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
     val metadataRevision = DownloadManager.metadataRevision
     val scanProgress by LocalGalleryScanner.scanProgress.collectAsState()
     val updateProgress by GalleryUpdateTracker.progress.collectAsState()
+    val ignoredDuplicateKeys by DuplicateGalleryIgnoreStore.ignoredKeys.collectAsState()
     val showTagTranslations by Settings.showTagTranslations.collectAsState()
 
     LaunchedEffect(showTagTranslations, EhTagDatabase.initialized) {
@@ -323,6 +335,67 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
             if (expectedIds != currentIds) {
                 invalidateKey = !invalidateKey
             }
+        }
+    }
+
+    val duplicateGroups = if (DownloadManager.isInitialized) {
+        remember(invalidateKey, metadataRevision, ignoredDuplicateKeys, list.size) {
+            findDuplicateGalleryGroups(
+                items = DownloadManager.downloadInfoList,
+                ignoredKeys = ignoredDuplicateKeys,
+            )
+        }
+    } else {
+        emptyList()
+    }
+
+    fun handleDuplicateGroup(group: DuplicateGalleryGroup) {
+        launch {
+            val mergeText = appResources.getString(R.string.download_duplicate_action_merge)
+            val deleteOldText = appResources.getString(R.string.download_duplicate_action_delete_old)
+            val ignoreText = appResources.getString(R.string.download_duplicate_action_ignore_group)
+            val primaryOld = group.older.firstOrNull() ?: return@launch
+            val canMerge = group.older.size == 1 && canMergeOlderVersionToNewer(primaryOld, group.newest)
+            val selectedAction = awaitSelectAction(title = R.string.download_duplicate_dialog_title) {
+                if (canMerge) {
+                    onSelect(mergeText) {
+                        val started = GalleryUpdateTracker.launchIncrementalUpdate(
+                            oldInfo = primaryOld,
+                            targetGid = group.newest.gid,
+                            targetToken = group.newest.token,
+                            titleHint = group.displayTitle,
+                            targetLabel = group.newest.label ?: primaryOld.label,
+                            replaceOld = true,
+                        )
+                        Toast.makeText(
+                            appContext,
+                            appResources.getString(
+                                if (started) R.string.download_update_started_bg else R.string.download_update_running,
+                            ),
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                }
+                onSelect(deleteOldText) {
+                    launchIO {
+                        group.older.forEach { oldItem ->
+                            DownloadManager.deleteOlderVersionKeepNewer(oldItem.gid, group.newest.gid)
+                        }
+                        scope.coroutineLaunch {
+                            invalidateKey = !invalidateKey
+                            Toast.makeText(
+                                appContext,
+                                appResources.getString(R.string.download_duplicate_deleted_toast),
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        }
+                    }
+                }
+                onSelect(ignoreText) {
+                    DuplicateGalleryIgnoreStore.ignore(group.key)
+                }
+            }
+            selectedAction()
         }
     }
 
@@ -734,12 +807,26 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
                             LocalScanProgressCard(
                                 progress = scanProgress,
                                 onCancel = LocalGalleryScanner::cancelScan,
+                                modifier = Modifier.animateItem(),
                             )
                         }
                     }
                     if (updateProgress.running) {
                         item(key = "gallery-update-progress", span = StaggeredGridItemSpan.FullLine) {
-                            GalleryUpdateProgressCard(progress = updateProgress)
+                            GalleryUpdateProgressCard(
+                                progress = updateProgress,
+                                modifier = Modifier.animateItem(),
+                            )
+                        }
+                    }
+                    if (duplicateGroups.isNotEmpty() && !selectMode) {
+                        item(key = "duplicate-gallery-banner", span = StaggeredGridItemSpan.FullLine) {
+                            DuplicateGalleryBannerCard(
+                                groups = duplicateGroups,
+                                onHandle = ::handleDuplicateGroup,
+                                onIgnore = { DuplicateGalleryIgnoreStore.ignore(it.key) },
+                                modifier = Modifier.animateItem(),
+                            )
                         }
                     }
                     items(list, key = { it.gid }) { info ->
@@ -776,12 +863,26 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
                             LocalScanProgressCard(
                                 progress = scanProgress,
                                 onCancel = LocalGalleryScanner::cancelScan,
+                                modifier = Modifier.animateItem(),
                             )
                         }
                     }
                     if (updateProgress.running) {
                         item(key = "gallery-update-progress") {
-                            GalleryUpdateProgressCard(progress = updateProgress)
+                            GalleryUpdateProgressCard(
+                                progress = updateProgress,
+                                modifier = Modifier.animateItem(),
+                            )
+                        }
+                    }
+                    if (duplicateGroups.isNotEmpty() && !selectMode) {
+                        item(key = "duplicate-gallery-banner") {
+                            DuplicateGalleryBannerCard(
+                                groups = duplicateGroups,
+                                onHandle = ::handleDuplicateGroup,
+                                onIgnore = { DuplicateGalleryIgnoreStore.ignore(it.key) },
+                                modifier = Modifier.animateItem(),
+                            )
                         }
                     }
                     itemsIndexed(list, key = { _, info -> info.gid }) { _, info ->
@@ -974,6 +1075,8 @@ private fun LocalScanProgressCard(
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var shown by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { shown = true }
     val statusText = when (progress.stage) {
         LocalGalleryScanner.ScanStage.FETCHING_METADATA -> stringResource(
             R.string.download_scan_progress_metadata,
@@ -986,32 +1089,43 @@ private fun LocalScanProgressCard(
             progress.total,
         )
     }
-    CrystalCard(
-        modifier = modifier
-            .fillMaxWidth()
-            .semantics { liveRegion = LiveRegionMode.Polite },
+    AnimatedVisibility(
+        visible = shown,
+        enter = expandVertically(tween(220)) + fadeIn(tween(180)),
+        modifier = modifier,
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = statusText,
-                    modifier = Modifier.weight(1f),
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.titleSmall,
-                )
-                TextButton(onClick = onCancel) {
-                    Text(text = stringResource(id = R.string.action_cancel))
+        CrystalCard(
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics { liveRegion = LiveRegionMode.Polite },
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = statusText,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    TextButton(onClick = onCancel) {
+                        Text(text = stringResource(id = R.string.action_cancel))
+                    }
                 }
-            }
-            Spacer(modifier = Modifier.height(6.dp))
-            if (progress.total > 0) {
-                LinearWavyProgressIndicator(
-                    progress = { (progress.scanned.toFloat() / progress.total).coerceIn(0f, 1f) },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            } else {
-                LinearWavyProgressIndicator(modifier = Modifier.fillMaxWidth())
+                Spacer(modifier = Modifier.height(6.dp))
+                if (progress.total > 0) {
+                    val animatedProgress by animateFloatAsState(
+                        targetValue = (progress.scanned.toFloat() / progress.total).coerceIn(0f, 1f),
+                        animationSpec = tween(durationMillis = 220),
+                        label = "LocalScanProgress",
+                    )
+                    LinearWavyProgressIndicator(
+                        progress = { animatedProgress },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                } else {
+                    LinearWavyProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
             }
         }
     }
@@ -1022,6 +1136,8 @@ private fun GalleryUpdateProgressCard(
     progress: GalleryUpdateProgress,
     modifier: Modifier = Modifier,
 ) {
+    var shown by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { shown = true }
     val stageText = when (progress.stage) {
         UpdateStage.FETCHING_DETAIL -> stringResource(R.string.download_update_stage_detail)
         UpdateStage.COMPARING_PAGES -> if (progress.total > 0) {
@@ -1037,37 +1153,115 @@ private fun GalleryUpdateProgressCard(
         UpdateStage.STARTING_DOWNLOAD -> stringResource(R.string.download_update_stage_enqueue)
         UpdateStage.IDLE -> ""
     }
-    CrystalCard(modifier = modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Text(
-                text = progress.title.ifBlank { stringResource(R.string.download_update) },
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.titleSmall,
-            )
-            Spacer(modifier = Modifier.height(6.dp))
-            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+    AnimatedVisibility(
+        visible = shown,
+        enter = expandVertically(tween(220)) + fadeIn(tween(180)),
+        modifier = modifier,
+    ) {
+        CrystalCard(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp)) {
                 Text(
-                    text = stageText,
-                    modifier = Modifier.weight(1f),
+                    text = progress.title.ifBlank { stringResource(R.string.download_update) },
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = stageText,
+                        modifier = Modifier.weight(1f),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                    if (progress.total > 0) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            RollingNumber(
+                                number = progress.current,
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                            Text(text = "/", style = MaterialTheme.typography.labelMedium)
+                            RollingNumberPlaceholder(
+                                number = progress.total,
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                if (progress.total > 0) {
+                    val animatedProgress by animateFloatAsState(
+                        targetValue = (progress.current.toFloat() / progress.total).coerceIn(0f, 1f),
+                        animationSpec = tween(durationMillis = 220),
+                        label = "GalleryUpdateProgress",
+                    )
+                    LinearWavyProgressIndicator(
+                        progress = { animatedProgress },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                } else {
+                    LinearWavyProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DuplicateGalleryBannerCard(
+    groups: List<DuplicateGalleryGroup>,
+    onHandle: (DuplicateGalleryGroup) -> Unit,
+    onIgnore: (DuplicateGalleryGroup) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val firstGroup = groups.firstOrNull() ?: return
+    val primaryOld = firstGroup.older.firstOrNull() ?: return
+    var shown by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { shown = true }
+
+    AnimatedVisibility(
+        visible = shown,
+        enter = expandVertically(tween(220)) + fadeIn(tween(180)),
+        modifier = modifier,
+    ) {
+        CrystalCard(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text(
+                    text = stringResource(R.string.download_duplicate_banner_title, groups.size),
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = firstGroup.displayTitle,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = stringResource(
+                        R.string.download_duplicate_banner_summary,
+                        primaryOld.gid,
+                        primaryOld.pages,
+                        firstGroup.newest.gid,
+                        firstGroup.newest.pages,
+                    ),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.labelMedium,
                 )
-                if (progress.total > 0) {
-                    Text(
-                        text = "${progress.current}/${progress.total}",
-                        style = MaterialTheme.typography.labelMedium,
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.height(6.dp))
-            if (progress.total > 0) {
-                LinearWavyProgressIndicator(
-                    progress = { (progress.current.toFloat() / progress.total).coerceIn(0f, 1f) },
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                )
-            } else {
-                LinearWavyProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = { onIgnore(firstGroup) }) {
+                        Text(text = stringResource(R.string.download_duplicate_action_ignore))
+                    }
+                    Button(onClick = { onHandle(firstGroup) }) {
+                        Text(text = stringResource(R.string.download_duplicate_action_handle))
+                    }
+                }
             }
         }
     }

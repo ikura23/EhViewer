@@ -3,8 +3,19 @@ package com.hippo.ehviewer.ui.main
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Environment
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.SharedTransitionScope
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -35,6 +46,7 @@ import androidx.compose.material3.ShapeDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.movableContentOf
@@ -49,6 +61,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
@@ -60,8 +73,12 @@ import com.ehviewer.core.files.toUri
 import com.ehviewer.core.i18n.R
 import com.ehviewer.core.ui.component.CrystalCard
 import com.ehviewer.core.ui.component.GalleryListCardRating
+import com.ehviewer.core.ui.component.RollingNumber
+import com.ehviewer.core.ui.component.RollingNumberPlaceholder
+import com.ehviewer.core.ui.util.HapticFeedbackType
 import com.ehviewer.core.ui.util.TransitionsVisibilityScope
 import com.ehviewer.core.ui.util.listThumbGenerator
+import com.ehviewer.core.ui.util.rememberHapticFeedback
 import com.hippo.ehviewer.EhDB
 import com.hippo.ehviewer.client.EhUtils
 import com.hippo.ehviewer.download.DownloadManager
@@ -99,8 +116,18 @@ fun DownloadCard(
     interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
 ) {
     val dragElevation by animateDpAsState(if (isDragging) 8.dp else 0.dp, label = "DragElevation")
+    val dragScale by animateFloatAsState(
+        targetValue = if (isDragging) 1.02f else 1f,
+        animationSpec = spring(dampingRatio = 0.75f, stiffness = Spring.StiffnessMediumLow),
+        label = "DragScale",
+    )
     CrystalCard(
-        modifier = modifier.shadow(dragElevation, CardDefaults.shape),
+        modifier = modifier
+            .graphicsLayer {
+                scaleX = dragScale
+                scaleY = dragScale
+            }
+            .shadow(dragElevation, CardDefaults.shape),
         onClick = onClick,
         onLongClick = onLongClick,
         interactionSource = interactionSource,
@@ -122,7 +149,7 @@ fun DownloadCard(
                     LocalDownloadThumb(
                         info = item,
                         thumbnailRefreshKey = refreshKey,
-                        animatedOnly = !item.isLocal && !item.thumbKey.isNullOrBlank() && '/' in item.thumbKey!!,
+                        animatedOnly = false,
                         sceneTag = "download-list",
                         speed = PREVIEW_ANIMATED_DEFAULT_SPEED,
                         modifier = Modifier.aspectRatio(DEFAULT_RATIO).fillMaxSize(),
@@ -237,13 +264,22 @@ fun DownloadCard(
                     if (total <= 0 || finished < 0) {
                         LinearWavyProgressIndicator(modifier = Modifier.fillMaxWidth())
                     } else {
-                        Row {
-                            Text(text = "$finished/$total")
+                        val animatedProgress by animateFloatAsState(
+                            targetValue = (finished.toFloat() / total.toFloat()).coerceIn(0f, 1f),
+                            animationSpec = tween(durationMillis = 200),
+                            label = "DownloadProgress",
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                RollingNumber(number = finished)
+                                Text(text = "/")
+                                RollingNumberPlaceholder(number = total)
+                            }
                             Spacer(modifier = Modifier.weight(1f))
                             Text(text = FileUtils.humanReadableByteCount(speed.coerceAtLeast(0)) + "/S")
                         }
                         LinearWavyProgressIndicator(
-                            progress = { finished.toFloat() / total.toFloat() },
+                            progress = { animatedProgress },
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
@@ -276,25 +312,59 @@ fun DownloadCard(
                 }
                 Spacer(modifier = Modifier.weight(1f))
                 val running = downloadState == DownloadInfo.STATE_WAIT || downloadState == DownloadInfo.STATE_DOWNLOAD
-                val icon = when (downloadState) {
-                    DownloadInfo.STATE_WAIT, DownloadInfo.STATE_DOWNLOAD -> Icons.Default.Pause
-                    DownloadInfo.STATE_FINISH -> Icons.Default.DownloadDone
-                    else -> Icons.Default.PlayArrow
-                }
                 val actionDesc = when {
                     downloadState == DownloadInfo.STATE_FINISH -> stringResource(R.string.download_state_finish)
                     running -> stringResource(R.string.action_cancel)
                     else -> stringResource(R.string.download)
                 }
                 val dragHandleDesc = stringResource(R.string.manual_order)
+                val hapticFeedback = rememberHapticFeedback()
+                var previousState by remember(info.gid) { mutableIntStateOf(downloadState) }
+                val doneScale = remember(info.gid) { Animatable(1f) }
+                LaunchedEffect(info.gid, downloadState) {
+                    val justCompleted = (previousState == DownloadInfo.STATE_WAIT || previousState == DownloadInfo.STATE_DOWNLOAD) &&
+                        downloadState == DownloadInfo.STATE_FINISH
+                    previousState = downloadState
+                    if (justCompleted) {
+                        hapticFeedback.performHapticFeedback(HapticFeedbackType.END)
+                        doneScale.snapTo(0.85f)
+                        doneScale.animateTo(1.22f, tween(durationMillis = 110))
+                        doneScale.animateTo(1f, spring(dampingRatio = 0.45f, stiffness = Spring.StiffnessMedium))
+                    }
+                }
+                val animatedStateIcon: @Composable (Int, String) -> Unit = { state, desc ->
+                    AnimatedContent(
+                        targetState = state,
+                        transitionSpec = {
+                            (fadeIn(tween(180)) + scaleIn(tween(180), initialScale = 0.78f)) togetherWith
+                                (fadeOut(tween(140)) + scaleOut(tween(140), targetScale = 0.78f))
+                        },
+                        label = "DownloadStateIcon",
+                    ) { targetState ->
+                        val icon = when (targetState) {
+                            DownloadInfo.STATE_WAIT, DownloadInfo.STATE_DOWNLOAD -> Icons.Default.Pause
+                            DownloadInfo.STATE_FINISH -> Icons.Default.DownloadDone
+                            else -> Icons.Default.PlayArrow
+                        }
+                        val iconModifier = if (targetState == DownloadInfo.STATE_FINISH) {
+                            Modifier.graphicsLayer {
+                                scaleX = doneScale.value
+                                scaleY = doneScale.value
+                            }
+                        } else {
+                            Modifier
+                        }
+                        Icon(imageVector = icon, contentDescription = desc, modifier = iconModifier)
+                    }
+                }
                 if (selectMode) {
                     Box(modifier = Modifier.offset(4.dp).minimumInteractiveComponentSize()) {
-                        Icon(imageVector = icon, contentDescription = actionDesc)
+                        animatedStateIcon(downloadState, actionDesc)
                     }
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = if (running) onStop else onStart, shapes = IconButtonDefaults.shapes(), modifier = Modifier.offset(4.dp)) {
-                            Icon(imageVector = icon, contentDescription = actionDesc)
+                            animatedStateIcon(downloadState, actionDesc)
                         }
                         if (dragHandleModifier != null) {
                             Box(
@@ -325,6 +395,7 @@ fun LocalDownloadThumb(
 ) {
     val cacheKey = LocalThumbCacheKey(info.gid, info.dirname, animatedOnly)
     val initialThumb = remember(cacheKey) { localThumbMemoryCache.get(cacheKey) }
+    val hadInitialCache = remember(cacheKey) { initialThumb != null }
     val thumbState by produceState(initialThumb, info.gid, info.dirname, animatedOnly, thumbnailRefreshKey) {
         val fresh = withContext(Dispatchers.IO) {
             resolveLocalThumb(info, animatedOnly)
@@ -339,16 +410,23 @@ fun LocalDownloadThumb(
         }
     }
     val resolved = thumbState
+    val fadeAlpha by animateFloatAsState(
+        targetValue = if (resolved != null) 1f else 0f,
+        animationSpec = tween(durationMillis = if (hadInitialCache) 0 else 150),
+        label = "LocalThumbFade",
+    )
     if (resolved != null) {
-        AnimatedPreviewImage(
-            data = resolved.data,
-            cacheKey = resolved.cacheKey,
-            sceneTag = sceneTag,
-            modifier = modifier,
-            speed = speed,
-            contentScale = contentScale,
-            onError = fallbackContent,
-        )
+        Box(modifier = modifier.background(MaterialTheme.colorScheme.surfaceVariant)) {
+            AnimatedPreviewImage(
+                data = resolved.data,
+                cacheKey = resolved.cacheKey,
+                sceneTag = sceneTag,
+                modifier = Modifier.fillMaxSize().graphicsLayer { alpha = fadeAlpha },
+                speed = speed,
+                contentScale = contentScale,
+                onError = fallbackContent,
+            )
+        }
     } else if (fallbackContent != null) {
         fallbackContent()
     } else {
@@ -458,10 +536,11 @@ private fun resolveLocalThumb(info: DownloadInfo, animatedOnly: Boolean): LocalT
         // SAF content:// 路径绝不能包装成 File；animatedOnly 模式下直接回退远程缩略图防止破图
         if (animatedOnly) return@runCatching null
         val cachedJpg = File(AppConfig.localThumbDir.toString(), "${info.gid}.jpg")
-        if (cachedJpg.isFile && isUsableThumb(cachedJpg)) {
+        if (cachedJpg.isFile && isUsableThumb(cachedJpg, minWidth = 500)) {
             val key = "local-thumb:${info.gid}:${cachedJpg.absolutePath}:${cachedJpg.lastModified()}:${cachedJpg.length()}"
             return@runCatching LocalThumbResult(cachedJpg, key)
         }
+        if (cachedJpg.isFile) cachedJpg.delete()
         val imageExts = setOf("jpg", "jpeg", "png", "webp", "gif", "avif")
         val firstChild = runCatching {
             dir.list().filter { entry ->
@@ -477,7 +556,7 @@ private fun resolveLocalThumb(info: DownloadInfo, animatedOnly: Boolean): LocalT
 
     val physicalFile = File(dir.toString())
     val candidateFile: File? = if (physicalFile.isFile) {
-        val cachePrefix = "${info.gid}-${dir.toString().hashCode().toUInt().toString(16)}"
+        val cachePrefix = "v2-${info.gid}-${dir.toString().hashCode().toUInt().toString(16)}"
         val cached = findCachedArchiveThumb(AppConfig.localThumbDir.toFile(), cachePrefix, animatedOnly)
         if (cached != null) {
             cached
@@ -485,7 +564,7 @@ private fun resolveLocalThumb(info: DownloadInfo, animatedOnly: Boolean): LocalT
             null
         } else {
             val archiveThumb = File(archiveThumbPath(info.gid).toString())
-            if (archiveThumb.isFile && isUsableThumb(archiveThumb)) {
+            if (archiveThumb.isFile && isUsableThumb(archiveThumb, minWidth = 500)) {
                 archiveThumb
             } else {
                 archiveThumb.delete()
@@ -493,22 +572,22 @@ private fun resolveLocalThumb(info: DownloadInfo, animatedOnly: Boolean): LocalT
             }
         }
     } else if (physicalFile.isDirectory) {
-        // 先快速探测首张实际图片是否为真动图：若是，直接播放原动图并跳过静态 .jpg 缓存
+        // 物理目录直接优先使用首张高清本地原图，清理旧版 320px 低清缓存，让 Coil 按屏幕尺寸高清解码。
         val firstFile = if (animatedOnly) {
             findFirstAnimatedImageInDir(physicalFile)
         } else {
             findFirstImageFileInDir(physicalFile)
         }
-        val cachedJpg = File(AppConfig.localThumbDir.toString(), "${info.gid}.jpg")
-        if (firstFile != null && firstFile.isFile && firstFile.length() <= MAX_ANIMATED_THUMB_BYTES && isAnimatedImageFile(firstFile)) {
-            if (cachedJpg.isFile) cachedJpg.delete()
-            firstFile
-        } else if (animatedOnly) {
-            null
-        } else if (cachedJpg.isFile && isUsableThumb(cachedJpg)) {
-            cachedJpg
+        val legacyJpg = File(AppConfig.localThumbDir.toString(), "${info.gid}.jpg")
+        if (legacyJpg.isFile) legacyJpg.delete()
+        if (firstFile != null && firstFile.isFile) {
+            if (animatedOnly && (firstFile.length() > MAX_ANIMATED_THUMB_BYTES || !isAnimatedImageFile(firstFile))) {
+                null
+            } else {
+                firstFile
+            }
         } else {
-            firstFile
+            null
         }
     } else {
         null
@@ -518,12 +597,12 @@ private fun resolveLocalThumb(info: DownloadInfo, animatedOnly: Boolean): LocalT
     LocalThumbResult(resolvedFile, key)
 }.getOrNull()
 
-private fun isUsableThumb(file: File): Boolean {
+private fun isUsableThumb(file: File, minWidth: Int = 1): Boolean {
     if (!file.isFile || file.length() == 0L) return false
     if (file.extension.lowercase() in setOf("gif", "webp")) return true
     val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeFile(file.absolutePath, opts)
-    return opts.outWidth > 0 && opts.outHeight > 0
+    return opts.outWidth >= minWidth && opts.outHeight > 0
 }
 
 private fun createArchiveThumb(archive: File, gid: Long, cachePrefix: String): File? {
@@ -557,8 +636,9 @@ private fun createArchiveThumb(archive: File, gid: Long, cachePrefix: String): F
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
                 if (bounds.outWidth <= 0 || bounds.outHeight <= 0) continue
+                val targetWidth = 640
                 var sampleSize = 1
-                while (bounds.outWidth / (sampleSize * 2) >= 320) {
+                while (bounds.outWidth / (sampleSize * 2) >= targetWidth) {
                     sampleSize *= 2
                 }
                 val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
@@ -567,11 +647,14 @@ private fun createArchiveThumb(archive: File, gid: Long, cachePrefix: String): F
                     bitmap.recycle()
                     continue
                 }
-                val width = 320
-                val height = (bitmap.height.toFloat() * width / bitmap.width).toInt().coerceAtLeast(1)
-                val scaled = Bitmap.createScaledBitmap(bitmap, width, height, true)
+                val scaled = if (bitmap.width > targetWidth) {
+                    val height = (bitmap.height.toFloat() * targetWidth / bitmap.width).toInt().coerceAtLeast(1)
+                    Bitmap.createScaledBitmap(bitmap, targetWidth, height, true)
+                } else {
+                    bitmap
+                }
                 val saved = runCatching {
-                    output.outputStream().use { scaled.compress(Bitmap.CompressFormat.JPEG, 82, it) }
+                    output.outputStream().use { scaled.compress(Bitmap.CompressFormat.JPEG, 92, it) }
                 }.getOrDefault(false)
                 if (scaled !== bitmap) scaled.recycle()
                 bitmap.recycle()

@@ -2,6 +2,8 @@ package com.hippo.ehviewer.download
 
 import com.ehviewer.core.model.BaseGalleryInfo
 import com.hippo.ehviewer.spider.SpiderInfo
+import java.nio.file.Files
+import okio.Path.Companion.toOkioPath
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -91,5 +93,22 @@ class GalleryUpdateHelperTest {
             pTokenMap = hashMapOf(0 to "a", 1 to "b"),
         )
         assertTrue(hasAllRequiredOldPTokens(fullArchive, emptySet(), hasArchive = true))
+    }
+
+    @Test
+    fun persistsReadsAndDeletesUpgradeReplaceMarker() {
+        val tempDir = Files.createTempDirectory("ehviewer_upgrade_marker_test").toFile()
+        try {
+            val okioDir = tempDir.toOkioPath()
+            assertNull(readUpgradeReplaceMarker(okioDir))
+
+            writeUpgradeReplaceMarker(okioDir, 4203956L)
+            assertEquals(4203956L, readUpgradeReplaceMarker(okioDir))
+
+            deleteUpgradeReplaceMarker(okioDir)
+            assertNull(readUpgradeReplaceMarker(okioDir))
+        } finally {
+            tempDir.deleteRecursively()
+        }
     }
 }

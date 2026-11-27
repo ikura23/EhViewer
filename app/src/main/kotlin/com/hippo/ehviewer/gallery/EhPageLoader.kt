@@ -33,6 +33,8 @@ suspend inline fun <T> useEhPageLoader(
 
                 override fun openSource(index: Int) = queen.spiderDen.getImageSource(index)
 
+                override fun openCachedPreviewSource(index: Int) = queen.spiderDen.getImageSourceOrNull(index)
+
                 override fun prefetchPages(pages: List<Int>, bounds: IntRange) = queen.preloadPages(pages, bounds)
 
                 override fun onRequest(index: Int, force: Boolean, orgImg: Boolean) = queen.request(index, force, orgImg)

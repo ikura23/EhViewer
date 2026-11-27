@@ -43,6 +43,7 @@ fun Slider(
     onValueChange: (Int) -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    onValueChangeFinished: (() -> Unit)? = null,
     maxTickCount: Int = defaultMaxTickCount(),
     colors: SliderColors = SliderDefaults.colors(),
     interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
@@ -52,6 +53,7 @@ fun Slider(
         onValueChange = { onValueChange(it.fastRoundToInt()) },
         modifier = modifier,
         enabled = enabled,
+        onValueChangeFinished = onValueChangeFinished,
         colors = colors,
         interactionSource = interactionSource,
         track = { state ->

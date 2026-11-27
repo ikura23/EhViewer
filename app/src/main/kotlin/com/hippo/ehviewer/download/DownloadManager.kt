@@ -571,16 +571,23 @@ object DownloadManager : CoroutineScope {
         absolutePath: String,
         pages: Int,
         label: String? = "本地",
+        downloadedPages: Int = pages,
+        initialState: Int = DownloadInfo.STATE_FINISH,
     ): Boolean = commandResult {
         if (containDownloadInfo(galleryInfo.gid)) return@commandResult false
         if (label != null) addLabelOwned(label)
-        galleryInfo.pages = pages
+        val clampedTotal = pages.coerceAtLeast(1)
+        val clampedDownloaded = downloadedPages.coerceIn(0, clampedTotal)
+        galleryInfo.pages = clampedTotal
         val info = DownloadInfo(galleryInfo.asEntity(), absolutePath)
-        info.state = DownloadInfo.STATE_FINISH
-        info.pages = pages
-        info.downloaded = pages
-        info.total = pages
-        info.finished = pages
+        info.state = initialState
+        info.pages = clampedTotal
+        info.downloaded = clampedDownloaded
+        info.total = clampedTotal
+        info.finished = clampedDownloaded
+        if (initialState != DownloadInfo.STATE_FINISH) {
+            info.legacy = (clampedTotal - clampedDownloaded).coerceAtLeast(0)
+        }
         info.label = label
         val artistNames = extractArtistNames(galleryInfo.simpleTags)
         if (artistNames.isNotEmpty()) {
@@ -957,6 +964,62 @@ object DownloadManager : CoroutineScope {
         if (upgradePrefs.contains(newGid.toString())) {
             upgradePrefs.edit().remove(newGid.toString()).apply()
         }
+        deleteUpgradeReplaceMarker(mAllInfoMap[newGid]?.downloadDir)
+    }
+
+    /**
+     * 仅从数据库与下载列表中移除误导入或重复的本地记录，绝不删除磁盘原始文件。
+     */
+    suspend fun removeStaleLocalEntries(gids: Collection<Long>): Int {
+        if (gids.isEmpty()) return 0
+        return commandResult {
+            val targets = gids.distinct().mapNotNull { gid ->
+                val info = mAllInfoMap[gid] ?: return@mapNotNull null
+                if (info.state != DownloadInfo.STATE_FINISH) return@mapNotNull null
+                if (mCurrentTask?.gid == gid || mWaitList.any { it.gid == gid }) return@mapNotNull null
+                info
+            }
+            if (targets.isEmpty()) return@commandResult 0
+            for (info in targets) {
+                removeDownloadEntryOwned(info, deleteFiles = false)
+            }
+            metadataRevision++
+            targets.size
+        }
+    }
+
+    /**
+     * 当已完成画廊目录内保留升级替换标记文件时，主动执行旧版进度迁移与旧条目清理。
+     */
+    suspend fun completePendingUpgradeReplacementIfFinished(gid: Long) = command {
+        val info = mAllInfoMap[gid] ?: return@command
+        if (info.state != DownloadInfo.STATE_FINISH) return@command
+        replaceOldVersionIfRegisteredOwned(info)
+    }
+
+    /**
+     * 手动删除同名旧版本画廊并保留新版：
+     * 若新版尚未记录阅读进度，自动继承旧版页码进度；随后清理旧版记录及应用内旧下载目录（外部“本地”原文件不删除）。
+     */
+    suspend fun deleteOlderVersionKeepNewer(oldGid: Long, keepNewerGid: Long) = command {
+        if (oldGid == keepNewerGid) return@command
+        persist {
+            val oldProgress = EhDB.getReadProgress(oldGid)
+            if (oldProgress > 0 && EhDB.getReadProgress(keepNewerGid) <= 0) {
+                EhDB.putReadProgress(keepNewerGid, oldProgress)
+            }
+        }
+        removeUpgradeMappingsFor(oldGid)
+        stopDownloadInternal(oldGid)
+        val oldInfo = mAllInfoMap[oldGid] ?: return@command
+        val preserveDir = mAllInfoMap[keepNewerGid]?.downloadDir
+        removeDownloadEntryOwned(
+            info = oldInfo,
+            deleteFiles = !oldInfo.isLocal,
+            preserveDir = preserveDir,
+        )
+        metadataRevision++
+        ensureDownload()
     }
 
     private fun removeUpgradeMappingsFor(gid: Long) {
@@ -974,6 +1037,7 @@ object DownloadManager : CoroutineScope {
             }
         }
         if (changed) editor.apply()
+        deleteUpgradeReplaceMarker(mAllInfoMap[gid]?.downloadDir)
     }
 
     private suspend fun removeDownloadEntryOwned(
@@ -1353,9 +1417,11 @@ object DownloadManager : CoroutineScope {
     }
 
     private suspend fun replaceOldVersionIfRegisteredOwned(newInfo: DownloadInfo) {
-        val oldGid = upgradePrefs.getLong(newInfo.gid.toString(), -1L)
-        if (oldGid <= 0L || oldGid == newInfo.gid) return
+        val prefOldGid = upgradePrefs.getLong(newInfo.gid.toString(), -1L)
+        val oldGid = if (prefOldGid > 0L) prefOldGid else (readUpgradeReplaceMarker(newInfo.downloadDir) ?: -1L)
         upgradePrefs.edit().remove(newInfo.gid.toString()).apply()
+        deleteUpgradeReplaceMarker(newInfo.downloadDir)
+        if (oldGid <= 0L || oldGid == newInfo.gid) return
 
         persist {
             val oldProgress = EhDB.getReadProgress(oldGid)

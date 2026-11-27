@@ -184,6 +184,8 @@ object Settings : DataStorePreferences(null) {
     val readWithVolumeKeysInverted = boolPref("reader_volume_keys_inverted", false)
     val grayScale = boolPref("pref_grayscale", false)
     val invertedColors = boolPref("pref_inverted_colors", false)
+    val imageEnhanceMode = intPref("pref_image_enhance_mode", 0)
+    val imageEnhanceStrength = intPref("pref_image_enhance_strength", 65)
     val readerWebtoonNav = intPref("reader_navigation_mode_webtoon", 0)
     val readerPagerNav = intPref("reader_navigation_mode_pager", 0)
     val readerPagerNavInverted = intPref("reader_tapping_inverted_2", 0)
@@ -226,6 +228,14 @@ object Settings : DataStorePreferences(null) {
                 if (clamped != speed) {
                     pref[animatedPlaybackSpeed] = clamped
                 }
+            }
+            if (pref[imageEnhanceMode] !in 0..2) {
+                pref[imageEnhanceMode] = 0
+            }
+            val enhanceStrength = pref[imageEnhanceStrength]
+            val clampedStrength = enhanceStrength.coerceIn(10, 100)
+            if (clampedStrength != enhanceStrength) {
+                pref[imageEnhanceStrength] = clampedStrength
             }
         }
     }

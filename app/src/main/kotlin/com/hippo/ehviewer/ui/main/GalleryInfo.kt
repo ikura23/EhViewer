@@ -214,7 +214,7 @@ fun GalleryInfoGridItem(
                 if (preferLocal) {
                     LocalDownloadThumb(
                         info = localCandidate,
-                        animatedOnly = !localCandidate.isLocal && !localCandidate.thumbKey.isNullOrBlank() && '/' in localCandidate.thumbKey!!,
+                        animatedOnly = false,
                         sceneTag = "gallery-grid",
                         speed = PREVIEW_ANIMATED_DEFAULT_SPEED,
                         modifier = Modifier.aspectRatio(ratio),

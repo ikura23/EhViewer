@@ -58,6 +58,7 @@ suspend inline fun <T> useArchivePageLoader(
         if (needPassword() && archivePasswds.none(::providePassword)) {
             archivePasswds += passwdProvider(::providePassword)
         }
+        val closed = java.util.concurrent.atomic.AtomicBoolean(false)
         val loader = install(
             object : PageLoader(this, info, startPage, size, hasAds) {
                 override val title by lazy {
@@ -84,6 +85,16 @@ suspend inline fun <T> useArchivePageLoader(
                     checkNotNull(buffer) { "Extract archive content $index failed!" }
                     check(buffer.isDirect)
                     return byteBufferSource(buffer) { releaseByteBuffer(buffer) }
+                }
+
+                override fun openCachedPreviewSource(index: Int): ImageSource? {
+                    if (closed.get() || index !in 0 until size) return null
+                    return runCatching { openSource(index) }.getOrNull()
+                }
+
+                override fun close() {
+                    closed.set(true)
+                    super.close()
                 }
 
                 override fun prefetchPages(pages: List<Int>, bounds: IntRange) = Unit

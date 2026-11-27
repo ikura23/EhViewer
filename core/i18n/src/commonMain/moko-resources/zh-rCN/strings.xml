@@ -678,5 +678,24 @@
     <string name="download_scan_progress_metadata">正在补全画廊信息 (%1$d/%2$d)…</string>
     <string name="download_scan_complete_summary">本地扫描完成：发现 %1$d 项，新增 %2$d 项，补全信息 %3$d 项</string>
     <string name="download_manual_sort_list_hint">已切换至列表视图，可拖动右侧图标调整顺序</string>
+    <string name="pref_color_filter_presets">护眼快捷预设</string>
+    <string name="color_filter_preset_warm">暖黄护眼</string>
+    <string name="color_filter_preset_soft_dim">柔和暗灰</string>
+    <string name="color_filter_preset_reset">重置</string>
+    <string name="download_duplicate_banner_title">发现 %1$d 组同名新旧版本画廊</string>
+    <string name="download_duplicate_banner_summary">旧版 #%1$d（%2$dP） → 新版 #%3$d（%4$dP）</string>
+    <string name="download_duplicate_action_handle">处理</string>
+    <string name="download_duplicate_action_ignore">忽略</string>
+    <string name="download_duplicate_dialog_title">处理同名新旧版本画廊</string>
+    <string name="download_duplicate_action_merge">合并到新版（复用旧页、补齐后删旧版）</string>
+    <string name="download_duplicate_action_delete_old">直接删除旧版（保留新版并保留进度）</string>
+    <string name="download_duplicate_action_ignore_group">暂不处理（不再提示此组）</string>
+    <string name="download_duplicate_deleted_toast">已删除旧版本并保留新版</string>
+    <string name="pref_image_enhance">画质增强 (GPU)</string>
+    <string name="image_enhance_off">关闭</string>
+    <string name="image_enhance_sharpen">清晰锐化</string>
+    <string name="image_enhance_anime">动漫增强</string>
+    <string name="pref_image_enhance_strength">增强强度</string>
+    <string name="image_enhance_requires_android_13">需要 Android 13 及以上系统支持</string>
     <!-- Tachiyomi Reader End-->
 </resources>

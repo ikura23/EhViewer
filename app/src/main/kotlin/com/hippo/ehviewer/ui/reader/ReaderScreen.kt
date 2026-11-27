@@ -361,7 +361,10 @@ fun ReaderScreen(pageLoader: PageLoader, info: BaseGalleryInfo?, isLocalDownload
             volumeKeysInverted = { volumeKeysInverted },
             movePrevious = {
                 launch {
-                    if (isWebtoon) {
+                    if (animatedPlaybackActive) {
+                        val target = (lazyListState.layoutInfo.dominantVisibleItemIndex(0) - 1).coerceAtLeast(0)
+                        lazyListState.animateScrollToItem(target)
+                    } else if (isWebtoon) {
                         lazyListState.scrollWebtoonPage(false, pageLoader, Settings.webtoonSidePadding.value)
                     } else {
                         pagerState.moveToPrevious()
@@ -370,7 +373,11 @@ fun ReaderScreen(pageLoader: PageLoader, info: BaseGalleryInfo?, isLocalDownload
             },
             moveNext = {
                 launch {
-                    if (isWebtoon) {
+                    if (animatedPlaybackActive) {
+                        val last = (pageLoader.size - 1).coerceAtLeast(0)
+                        val target = (lazyListState.layoutInfo.dominantVisibleItemIndex(0) + 1).coerceAtMost(last)
+                        lazyListState.animateScrollToItem(target)
+                    } else if (isWebtoon) {
                         lazyListState.scrollWebtoonPage(true, pageLoader, Settings.webtoonSidePadding.value)
                     } else {
                         pagerState.moveToNext()
@@ -564,7 +571,9 @@ fun ReaderScreen(pageLoader: PageLoader, info: BaseGalleryInfo?, isLocalDownload
             showSeekBar = showSeekbar,
             slider = sync.slider,
             totalPages = pageLoader.size,
-            onSliderValueChange = sync::sliderScrollTo,
+            pageLoader = pageLoader,
+            onSliderValueChange = sync::sliderPreviewTo,
+            onSliderValueChangeFinished = sync::sliderCommit,
             onClickSettings = {
                 launch {
                     dialog { cont ->

@@ -11,6 +11,7 @@ import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
 import android.provider.Settings
 import com.ehviewer.core.database.model.DownloadInfo
+import com.ehviewer.core.files.exists
 import com.ehviewer.core.files.find
 import com.ehviewer.core.files.isDirectory
 import com.ehviewer.core.files.isFile
@@ -232,56 +233,69 @@ object LocalGalleryScanner {
             if (currentDownloadDir != null && runCatching { currentDownloadDir.isDirectory }.getOrDefault(false)) {
                 rootCount++
                 val children = runCatching { currentDownloadDir.list() }.getOrDefault(emptyList())
-                updateScanningProgress(children.size)
+                val dirChildren = mutableListOf<Path>()
+                val archiveChildren = mutableListOf<Path>()
                 for (entry in children) {
-                    currentCoroutineContext().ensureActive()
-                    val isDir = runCatching { entry.isDirectory }.getOrDefault(false)
-                    if (isDir) {
-                        val subEntries = runCatching { entry.list() }.getOrNull() ?: continue
-                        if (!looksLikeGalleryFromEntries(subEntries)) continue
-                        scanned++
-                        val item = runCatching { readLocalItem(entry, subEntries) }.getOrNull()
-                        if (item != null) {
-                            val forcedTarget = resolveConfiguredEntryTarget(
-                                entry = entry,
-                                isArchive = false,
-                                configuredRoot = configuredRoot,
-                                appDownloadRoots = appDownloadRoots,
-                            )
-                            if (importItem(item, entry, isArchive = false, configuredRoot = configuredRoot, appDownloadRoots = appDownloadRoots, overrideTarget = forcedTarget) == true) {
-                                imported++
-                            }
-                            markProcessed(processedPaths, entry, configuredRoot)
-                        }
-                        updateScanningProgress(children.size)
+                    if (runCatching { entry.isDirectory }.getOrDefault(false)) {
+                        dirChildren += entry
                     } else if (isArchiveFile(entry)) {
-                        val resolvedArchive = resolvePhysicalArchivePath(entry, configuredRoot)
-                        val archiveTargetPath = resolvedArchive ?: entry
-                        if (!archiveTargetPath.toString().startsWith("/")) continue
-                        val archiveTarget = resolveConfiguredEntryTarget(
-                            entry = archiveTargetPath,
-                            isArchive = true,
+                        archiveChildren += entry
+                    }
+                }
+                updateScanningProgress(children.size)
+                // 先目录后压缩包：保证同 GID 文件夹优先于压缩包入库，避免重复导入或压缩包覆盖目录。
+                for (entry in dirChildren) {
+                    currentCoroutineContext().ensureActive()
+                    if (shouldSkipDirectoryName(entry.name)) continue
+                    val subEntries = runCatching { entry.list() }.getOrNull() ?: continue
+                    val subNames = subEntries.map { it.name }
+                    val hasExplicitMeta = subNames.any { it == COMIC_INFO_FILE || it == SPIDER_INFO_FILENAME }
+                    if (!isValidGalleryDirectoryEntries(subNames, hasExplicitMeta, allowSingleImage = false)) continue
+                    scanned++
+                    val item = runCatching { readLocalItem(entry, subEntries) }.getOrNull()
+                    if (item != null) {
+                        val forcedTarget = resolveConfiguredEntryTarget(
+                            entry = entry,
+                            isArchive = false,
                             configuredRoot = configuredRoot,
                             appDownloadRoots = appDownloadRoots,
                         )
-                        val handledFast = handleExistingArchiveFast(archiveTargetPath, archiveTarget)
-                        if (handledFast) {
-                            scanned++
-                            markProcessed(processedPaths, archiveTargetPath, configuredRoot)
-                            updateScanningProgress(children.size)
-                            continue
+                        if (importItem(item, entry, isArchive = false, configuredRoot = configuredRoot, appDownloadRoots = appDownloadRoots, overrideTarget = forcedTarget) == true) {
+                            imported++
                         }
-                        if (!isReadableArchivePath(archiveTargetPath)) continue
-                        scanned++
-                        val item = runCatching { readArchiveItem(archiveTargetPath) }.getOrNull()
-                        if (item != null) {
-                            if (importItem(item, archiveTargetPath, isArchive = true, configuredRoot = configuredRoot, appDownloadRoots = appDownloadRoots, overrideTarget = archiveTarget) == true) {
-                                imported++
-                            }
-                            markProcessed(processedPaths, archiveTargetPath, configuredRoot)
-                        }
-                        updateScanningProgress(children.size)
+                        markProcessed(processedPaths, entry, configuredRoot)
                     }
+                    updateScanningProgress(children.size)
+                }
+                for (entry in archiveChildren) {
+                    currentCoroutineContext().ensureActive()
+                    if (entry.name.startsWith("._")) continue
+                    val resolvedArchive = resolvePhysicalArchivePath(entry, configuredRoot)
+                    val archiveTargetPath = resolvedArchive ?: entry
+                    if (!archiveTargetPath.toString().startsWith("/")) continue
+                    val archiveTarget = resolveConfiguredEntryTarget(
+                        entry = archiveTargetPath,
+                        isArchive = true,
+                        configuredRoot = configuredRoot,
+                        appDownloadRoots = appDownloadRoots,
+                    )
+                    val handledFast = handleExistingArchiveFast(archiveTargetPath, archiveTarget)
+                    if (handledFast) {
+                        scanned++
+                        markProcessed(processedPaths, archiveTargetPath, configuredRoot)
+                        updateScanningProgress(children.size)
+                        continue
+                    }
+                    if (!isReadableArchivePath(archiveTargetPath)) continue
+                    scanned++
+                    val item = runCatching { readArchiveItem(archiveTargetPath) }.getOrNull()
+                    if (item != null) {
+                        if (importItem(item, archiveTargetPath, isArchive = true, configuredRoot = configuredRoot, appDownloadRoots = appDownloadRoots, overrideTarget = archiveTarget) == true) {
+                            imported++
+                        }
+                        markProcessed(processedPaths, archiveTargetPath, configuredRoot)
+                    }
+                    updateScanningProgress(children.size)
                 }
             }
         }
@@ -299,17 +313,24 @@ object LocalGalleryScanner {
             for (root in roots) {
                 val rootKey = canonicalPath(root)
                 val rootEntries = runCatching { root.list() }.getOrNull()
-                // 若用户直接选取某个画廊文件夹作为扫描根目录，应直接识别该根目录自身
-                if (rootEntries != null && looksLikeGalleryFromEntries(rootEntries) && rootKey !in processedPaths) {
-                    scanned++
-                    val item = runCatching { readLocalItem(root, rootEntries) }.getOrNull()
-                    if (item != null) {
-                        if (importItem(item, root, isArchive = false, configuredRoot = configuredRoot, appDownloadRoots = appDownloadRoots) == true) {
-                            imported++
+                // 若用户直接选取某个非通用下载目录的画廊文件夹作为扫描根目录，直接识别该根目录自身。
+                if (rootEntries != null &&
+                    !isGenericDownloadRootPath(rootKey, storage.toString()) &&
+                    rootKey !in processedPaths
+                ) {
+                    val rootNames = rootEntries.map { it.name }
+                    val hasExplicitMeta = rootNames.any { it == COMIC_INFO_FILE || it == SPIDER_INFO_FILENAME }
+                    if (isValidGalleryDirectoryEntries(rootNames, hasExplicitMeta, allowSingleImage = true)) {
+                        scanned++
+                        val item = runCatching { readLocalItem(root, rootEntries) }.getOrNull()
+                        if (item != null) {
+                            if (importItem(item, root, isArchive = false, configuredRoot = configuredRoot, appDownloadRoots = appDownloadRoots) == true) {
+                                imported++
+                            }
+                            processedPaths += rootKey
+                            updateScanningProgress(scanned)
+                            continue
                         }
-                        processedPaths += rootKey
-                        updateScanningProgress(scanned)
-                        continue
                     }
                 }
                 val pending = ArrayDeque<Pair<Path, Int>>()
@@ -318,12 +339,25 @@ object LocalGalleryScanner {
                     currentCoroutineContext().ensureActive()
                     val (dir, depth) = pending.removeLast()
                     val entries = runCatching { dir.list() }.getOrElse { continue }
+                    val dirEntries = mutableListOf<Path>()
+                    val archiveEntries = mutableListOf<Path>()
                     for (entry in entries) {
-                        currentCoroutineContext().ensureActive()
-                        val entryKey = canonicalPath(entry)
                         if (runCatching { entry.isDirectory }.getOrDefault(false)) {
-                            val subEntries = runCatching { entry.list() }.getOrNull()
-                            if (subEntries != null && looksLikeGalleryFromEntries(subEntries)) {
+                            dirEntries += entry
+                        } else if (isArchiveFile(entry)) {
+                            archiveEntries += entry
+                        }
+                    }
+                    // 同目录下也优先扫目录再扫压缩包，防止压缩包抢先占位。
+                    for (entry in dirEntries) {
+                        currentCoroutineContext().ensureActive()
+                        if (shouldSkipDirectoryName(entry.name)) continue
+                        val entryKey = canonicalPath(entry)
+                        val subEntries = runCatching { entry.list() }.getOrNull()
+                        if (subEntries != null) {
+                            val subNames = subEntries.map { it.name }
+                            val hasExplicitMeta = subNames.any { it == COMIC_INFO_FILE || it == SPIDER_INFO_FILENAME }
+                            if (isValidGalleryDirectoryEntries(subNames, hasExplicitMeta, allowSingleImage = false)) {
                                 if (entryKey in processedPaths) continue
                                 scanned++
                                 val item = runCatching { readLocalItem(entry, subEntries) }.getOrNull()
@@ -337,13 +371,16 @@ object LocalGalleryScanner {
                                 }
                                 updateScanningProgress(scanned + pending.size)
                             }
-                            if (depth < MAX_SCAN_DEPTH) {
-                                pending.addLast(entry to depth + 1)
-                            }
-                            continue
                         }
-
-                        if (!isArchiveFile(entry) || entryKey in processedPaths) continue
+                        if (depth < MAX_SCAN_DEPTH) {
+                            pending.addLast(entry to depth + 1)
+                        }
+                    }
+                    for (entry in archiveEntries) {
+                        currentCoroutineContext().ensureActive()
+                        if (entry.name.startsWith("._")) continue
+                        val entryKey = canonicalPath(entry)
+                        if (entryKey in processedPaths) continue
                         if (!entry.toString().startsWith("/")) continue
                         val target = resolveImportTarget(
                             entryCanonicalPath = entryKey,
@@ -370,6 +407,16 @@ object LocalGalleryScanner {
             }
         }
 
+        // 标准扫描结束后，清理历史上误导入的非画廊软件/浏览器条目及与目录重复的压缩包条目（绝不删磁盘原文件）。
+        if (extraRoots.isEmpty()) {
+            runCatching {
+                cleanupStaleOrDuplicateLocalEntries(
+                    storageRoot = storage.toString(),
+                    appDownloadRoots = appDownloadRoots,
+                )
+            }
+        }
+
         // 阶段二：自动联网批量补全缺少分类、作者、上传者或远程封面的画廊元数据
         val metadataUpdated = enrichMissingMetadata()
         Result(
@@ -389,11 +436,14 @@ object LocalGalleryScanner {
 
     /**
      * 对已在库中的 `.cbz`/`.zip` 压缩包跳过耗时的 Zip 目录/封面重读；
+     * 若已有同 GID 的目录在库则直接跳过压缩包，防止重复导入；
      * 若它位于应用下载目录内，顺手纠偏清除残留的“本地”标签。
      */
     private suspend fun handleExistingArchiveFast(entry: Path, target: ImportTarget): Boolean {
-        val gid = stableLocalArchiveGid(canonicalPath(entry))
+        val gid = resolveArchiveGid(entry.name, canonicalPath(entry))
         val existing = DownloadManager.getDownloadInfo(gid) ?: return false
+        val existingIsDir = existing.downloadDir?.let { runCatching { it.isDirectory }.getOrDefault(false) } == true
+        if (existingIsDir) return true
         if (existing.state == DownloadInfo.STATE_FINISH && target.isInsideAppDownloadDir) {
             runCatching {
                 DownloadManager.normalizeAppDownloadEntry(
@@ -544,20 +594,33 @@ object LocalGalleryScanner {
         appDownloadRoots: List<String>,
         overrideTarget: ImportTarget? = null,
     ): Boolean? {
-        if (isArchive) {
-            runCatching { ensureArchiveThumb(path, item.gid) }
-        }
         val target = overrideTarget ?: resolveImportTarget(
             entryCanonicalPath = canonicalPath(path),
             configuredDownloadRoot = configuredRoot,
             appDownloadRoots = appDownloadRoots,
             isArchive = isArchive,
         )
+        val (resolvedTotalPages, resolvedState) = resolveLocalDownloadCompletion(
+            actualImages = item.pages,
+            spiderPages = item.spiderPages,
+            isInsideAppDownloadDir = target.isInsideAppDownloadDir,
+            hasValidRemoteIdentity = item.hasValidRemoteIdentity,
+        )
         val existing = DownloadManager.getDownloadInfo(item.gid)
         if (existing != null) {
             // 正在下载/排队/暂停中的条目不能被本地扫描改写，否则会把未完成的
             // 目录当成"已完成"并覆盖真实页数，导致下载永久停在中途。
             if (existing.state != DownloadInfo.STATE_FINISH) return false
+            // 目录优先于压缩包：已有同 GID 文件夹时，不再用压缩包覆盖。
+            val existingIsDir = existing.downloadDir?.let { runCatching { it.isDirectory }.getOrDefault(false) } == true
+            if (isArchive && existingIsDir) return false
+            // 应用主下载目录优先于外部历史目录：防止旧分支遗留文件夹反向覆盖当前正主。
+            val existingExistsOnDisk = existing.downloadDir?.let { runCatching { it.exists() }.getOrDefault(false) } == true
+            if (!target.isInsideAppDownloadDir && !existing.isLocal && existingExistsOnDisk) return false
+
+            if (isArchive) {
+                runCatching { ensureArchiveThumb(path, item.gid) }
+            }
             runCatching {
                 if (target.isInsideAppDownloadDir) {
                     DownloadManager.normalizeAppDownloadEntry(
@@ -577,12 +640,123 @@ object LocalGalleryScanner {
                     )
                 }
             }
+            if (!isArchive && readUpgradeReplaceMarker(path) != null) {
+                runCatching { DownloadManager.completePendingUpgradeReplacementIfFinished(item.gid) }
+            }
             return false
         }
-        return runCatching {
-            DownloadManager.importLocalDownload(item.info, target.dirname, item.pages, target.label)
+        if (isArchive) {
+            runCatching { ensureArchiveThumb(path, item.gid) }
+        }
+        val imported = runCatching {
+            DownloadManager.importLocalDownload(
+                galleryInfo = item.info,
+                absolutePath = target.dirname,
+                pages = resolvedTotalPages,
+                label = target.label,
+                downloadedPages = item.pages,
+                initialState = resolvedState,
+            )
         }.getOrDefault(false)
+        if (imported && resolvedState == DownloadInfo.STATE_FINISH && !isArchive && readUpgradeReplaceMarker(path) != null) {
+            runCatching { DownloadManager.completePendingUpgradeReplacementIfFinished(item.gid) }
+        }
+        return imported
     }
+
+    /**
+     * 清理历史上误扫描入库的浏览器/应用杂物、已消失本地条目，以及与现有画廊目录重复的压缩包条目。
+     * 仅从数据库列表移除记录，绝不删除磁盘上的任何原文件。
+     */
+    private suspend fun cleanupStaleOrDuplicateLocalEntries(
+        storageRoot: String,
+        appDownloadRoots: List<String>,
+    ): Int {
+        val snapshot = DownloadManager.downloadInfoList.toList()
+        if (snapshot.isEmpty()) return 0
+
+        val validDirGids = snapshot.mapNotNullTo(hashSetOf()) { info ->
+            if (info.gid <= 0L) return@mapNotNullTo null
+            val dir = info.downloadDir ?: return@mapNotNullTo null
+            val isDir = runCatching { dir.isDirectory }.getOrDefault(false)
+            if (isDir) info.gid else null
+        }
+
+        val normalizedStorage = storageRoot.trimEnd('/').ifEmpty { "/" }
+        val genericDownloadPrefixes = listOf("$normalizedStorage/Download", "$normalizedStorage/download")
+        val normalizedAppRoots = appDownloadRoots.map { it.trimEnd('/').ifEmpty { "/" } }
+
+        val staleGids = mutableListOf<Long>()
+        for (info in snapshot) {
+            if (info.state != DownloadInfo.STATE_FINISH) continue
+            val rawDir = info.downloadDir?.toString() ?: continue
+            val isPhysical = rawDir.startsWith("/")
+
+            // 1. 外部压缩包如果是用旧负 GID 导入的，且同正 GID 目录已在库中，清除重复压缩包记录
+            if (info.gid < 0L && isPhysical && isArchivePathName(rawDir)) {
+                val file = File(rawDir)
+                if (!file.isFile) {
+                    staleGids += info.gid
+                    continue
+                }
+                val parsedGid = resolveArchiveGid(file.name, canonicalPath(rawDir))
+                if (parsedGid > 0L && parsedGid in validDirGids) {
+                    staleGids += info.gid
+                    continue
+                }
+                // 旧误扫的非画廊普通压缩包（如浏览器/网盘软件 zip）
+                if (!isReadableArchivePath(rawDir.toPath())) {
+                    staleGids += info.gid
+                    continue
+                }
+            }
+
+            if (!info.isLocal || !isPhysical) continue
+
+            val canonical = canonicalPath(rawDir)
+            val diskFile = File(canonical)
+            if (!diskFile.exists()) {
+                staleGids += info.gid
+                continue
+            }
+
+            if (info.gid < 0L && diskFile.isDirectory) {
+                if (isGenericDownloadRootPath(canonical, normalizedStorage)) {
+                    staleGids += info.gid
+                    continue
+                }
+                val relativeSegments = canonical.removePrefix("$normalizedStorage/").split('/').filter { it.isNotEmpty() }
+                if (relativeSegments.any(::shouldSkipDirectoryName)) {
+                    staleGids += info.gid
+                    continue
+                }
+                val inGenericDownload = genericDownloadPrefixes.any { prefix ->
+                    canonical == prefix || canonical.startsWith("$prefix/")
+                }
+                val inAllowedAppOrEhRoot = normalizedAppRoots.any { root ->
+                    canonical == root || canonical.startsWith("$root/")
+                } || relativeSegments.any { seg ->
+                    val low = seg.lowercase()
+                    low.contains("ehviewer") || low.contains("ehentai") || low.contains("eh-viewer")
+                }
+                if (inGenericDownload && !inAllowedAppOrEhRoot) {
+                    val hasExplicitMeta = File(diskFile, SPIDER_INFO_FILENAME).isFile || File(diskFile, COMIC_INFO_FILE).isFile
+                    if (!hasExplicitMeta) {
+                        staleGids += info.gid
+                        continue
+                    }
+                }
+            }
+        }
+        return if (staleGids.isNotEmpty()) {
+            DownloadManager.removeStaleLocalEntries(staleGids)
+        } else {
+            0
+        }
+    }
+
+    private fun isArchivePathName(path: String): Boolean =
+        path.substringAfterLast('.', "").lowercase() in ARCHIVE_EXTENSIONS
 
     private fun looksLikeGalleryFromEntries(entries: List<Path>): Boolean = entries.any {
         it.name == COMIC_INFO_FILE ||
@@ -604,9 +778,7 @@ object LocalGalleryScanner {
         }
         configuredRoot?.let { add(it.toPath()) }
 
-        // Scan all of Download recursively so Chinese-named subfolders are included.
-        add(storage / "Download")
-        add(storage / "download")
+        // 仅扫描明确的 EhViewer 系列目录，绝不整盘泛扫 /sdcard/Download 下的浏览器/聊天杂图。
         add(storage / "EhViewer" / "download")
         add(storage / "EhViewer" / "Download")
         add(storage / "EhViewerCN" / "download")
@@ -684,7 +856,8 @@ object LocalGalleryScanner {
         writeArchiveThumb(file, gid)
     }
 
-    private fun archiveThumbCachePrefix(file: Path, gid: Long) = "$gid-${file.toString().hashCode().toUInt().toString(16)}"
+    private fun archiveThumbCachePrefix(file: Path, gid: Long) =
+        "$ARCHIVE_THUMB_CACHE_VERSION-$gid-${file.toString().hashCode().toUInt().toString(16)}"
 
     private fun isArchiveImageEntry(entryName: String): Boolean {
         if (entryName.endsWith('/')) return false
@@ -695,7 +868,7 @@ object LocalGalleryScanner {
         return fileName.substringAfterLast('.', "").lowercase() in IMAGE_EXTENSIONS
     }
 
-    private fun decodeDownsampledBitmap(bytes: ByteArray, targetWidth: Int = 320): Bitmap? {
+    private fun decodeDownsampledBitmap(bytes: ByteArray, targetWidth: Int = ARCHIVE_THUMB_TARGET_WIDTH): Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
@@ -770,19 +943,22 @@ object LocalGalleryScanner {
             val animated = File(AppConfig.localThumbDir.toString(), "$cachePrefix.$outExt")
             if (runCatching { animated.writeBytes(bytes) }.isSuccess) return true
         }
-        val bitmap = decodeDownsampledBitmap(bytes, 320) ?: return false
+        val bitmap = decodeDownsampledBitmap(bytes, ARCHIVE_THUMB_TARGET_WIDTH) ?: return false
         if (bitmap.width <= 0 || bitmap.height <= 0) {
             bitmap.recycle()
             return false
         }
-        val width = 320
-        val height = (bitmap.height.toFloat() * width / bitmap.width).toInt().coerceAtLeast(1)
-        val scaled = Bitmap.createScaledBitmap(bitmap, width, height, true)
+        val scaled = if (bitmap.width > ARCHIVE_THUMB_TARGET_WIDTH) {
+            val height = (bitmap.height.toFloat() * ARCHIVE_THUMB_TARGET_WIDTH / bitmap.width).toInt().coerceAtLeast(1)
+            Bitmap.createScaledBitmap(bitmap, ARCHIVE_THUMB_TARGET_WIDTH, height, true)
+        } else {
+            bitmap
+        }
         val archiveThumb = File(archiveThumbPath(gid).toString())
         val cachedThumb = File(AppConfig.localThumbDir.toString(), "$cachePrefix.jpg")
         val written = runCatching {
-            cachedThumb.outputStream().use { scaled.compress(Bitmap.CompressFormat.JPEG, 82, it) }
-            archiveThumb.outputStream().use { scaled.compress(Bitmap.CompressFormat.JPEG, 82, it) }
+            cachedThumb.outputStream().use { scaled.compress(Bitmap.CompressFormat.JPEG, ARCHIVE_THUMB_JPEG_QUALITY, it) }
+            archiveThumb.outputStream().use { scaled.compress(Bitmap.CompressFormat.JPEG, ARCHIVE_THUMB_JPEG_QUALITY, it) }
         }.isSuccess
         if (scaled !== bitmap) scaled.recycle()
         bitmap.recycle()
@@ -791,38 +967,36 @@ object LocalGalleryScanner {
 
     private fun isArchiveFile(path: Path): Boolean = path.name.substringAfterLast('.', "").lowercase() in ARCHIVE_EXTENSIONS
 
-    /** 仅当压缩包内部至少包含一张有效图片时才导入（兼容物理路径与 SAF 文档）。 */
+    /** 仅当压缩包内部通过画廊结构校验（排除软件/文档等普通 zip）时才允许导入。 */
     private fun isReadableArchivePath(path: Path): Boolean = countArchivePages(path) > 0
 
-    /** 统计压缩包内的图片数量，不解压不复制原始压缩包。 */
+    /** 统计合格画廊压缩包内的图片数量，不解压不复制原始压缩包；不合格则返回 0。 */
     private fun countArchivePages(path: Path): Int = runCatching {
-        if (path.toString().startsWith("/")) {
+        val entryNames = if (path.toString().startsWith("/")) {
             ZipFile(path.toString()).use { zip ->
+                val list = mutableListOf<String>()
                 val entries = zip.entries()
-                var count = 0
                 while (entries.hasMoreElements()) {
-                    val name = entries.nextElement().name
-                    if (isArchiveImageEntry(name)) {
-                        count++
-                    }
+                    val e = entries.nextElement()
+                    if (!e.isDirectory) list += e.name
                 }
-                count
+                list
             }
         } else {
             openArchiveInputStream(path).use { rawStream ->
                 ZipInputStream(rawStream).use { zis ->
-                    var count = 0
+                    val list = mutableListOf<String>()
                     while (true) {
                         val entry = zis.nextEntry ?: break
-                        if (!entry.isDirectory && isArchiveImageEntry(entry.name)) {
-                            count++
-                        }
+                        if (!entry.isDirectory) list += entry.name
                         zis.closeEntry()
                     }
-                    count
+                    list
                 }
             }
         }
+        if (!isValidGalleryArchiveEntries(path.name, entryNames)) return@runCatching 0
+        entryNames.count(::isArchiveImageEntry)
     }.getOrDefault(0)
 
     /**
@@ -848,7 +1022,7 @@ object LocalGalleryScanner {
         val base = file.name.substringBeforeLast('.')
         val pages = countArchivePages(file)
         if (pages <= 0) return null
-        val gid = stableLocalArchiveGid(canonicalPath(file))
+        val gid = resolveArchiveGid(file.name, canonicalPath(file))
         val token = "local"
         val info = BaseGalleryInfo(gid, token).apply {
             title = cleanTitle(base)
@@ -936,7 +1110,13 @@ object LocalGalleryScanner {
             info.thumbKey = firstImage.name
             writeLocalThumb(firstImage, gid)
         }
-        return LocalItem(info, gid, pages)
+        return LocalItem(
+            info = info,
+            gid = gid,
+            pages = pages,
+            spiderPages = spider?.pages?.takeIf { it > 0 },
+            hasValidRemoteIdentity = gid > 0L && isValidGalleryHexToken(token),
+        )
     }
 
     private fun cleanTitle(value: String): String = value.replace(Regex("^\\s*\\d+\\s*[-_]\\s*"), "").trim().ifBlank { value }
@@ -968,20 +1148,22 @@ object LocalGalleryScanner {
     private fun writeLocalThumb(file: Path, gid: Long) {
         runCatching {
             val target = File(AppConfig.localThumbDir.toString(), "$gid.jpg")
-            // 动图封面禁止预压成静态 .jpg，否则下载列表中将无法播放动画
-            if (isAnimatedImagePath(file)) {
+            // 物理目录或动图不再生成低清 .jpg 缩略图，由列表直接交由 Coil 高清解码原图，并清理历史 320px 糊图。
+            if (file.toString().startsWith("/") || isAnimatedImagePath(file)) {
                 if (target.isFile) target.delete()
                 return
             }
             if (target.isFile) return
             val bytes = readPathBytesLimited(file, MAX_THUMB_SOURCE_BYTES) ?: return
-            val bitmap = decodeDownsampledBitmap(bytes, 320) ?: return
-            val width = 320
-            val height = (bitmap.height.toFloat() * width / bitmap.width).toInt().coerceAtLeast(1)
-            Bitmap.createScaledBitmap(bitmap, width, height, true).let { scaled ->
-                target.outputStream().use { scaled.compress(Bitmap.CompressFormat.JPEG, 82, it) }
-                if (scaled !== bitmap) scaled.recycle()
+            val bitmap = decodeDownsampledBitmap(bytes, ARCHIVE_THUMB_TARGET_WIDTH) ?: return
+            val scaled = if (bitmap.width > ARCHIVE_THUMB_TARGET_WIDTH) {
+                val height = (bitmap.height.toFloat() * ARCHIVE_THUMB_TARGET_WIDTH / bitmap.width).toInt().coerceAtLeast(1)
+                Bitmap.createScaledBitmap(bitmap, ARCHIVE_THUMB_TARGET_WIDTH, height, true)
+            } else {
+                bitmap
             }
+            target.outputStream().use { scaled.compress(Bitmap.CompressFormat.JPEG, ARCHIVE_THUMB_JPEG_QUALITY, it) }
+            if (scaled !== bitmap) scaled.recycle()
             bitmap.recycle()
         }
     }
@@ -998,12 +1180,193 @@ object LocalGalleryScanner {
         val info: BaseGalleryInfo,
         val gid: Long,
         val pages: Int,
+        val spiderPages: Int? = null,
+        val hasValidRemoteIdentity: Boolean = false,
     )
 
     private val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp", "gif", "avif")
     private val ARCHIVE_EXTENSIONS = setOf("cbz", "zip")
     private const val MAX_SCAN_DEPTH = 5
     private const val MAX_THUMB_SOURCE_BYTES = 32L * 1024 * 1024
+    internal const val ARCHIVE_THUMB_TARGET_WIDTH = 640
+    internal const val ARCHIVE_THUMB_JPEG_QUALITY = 92
+    internal const val ARCHIVE_THUMB_CACHE_VERSION = "v2"
+}
+
+private val SKIPPED_DIRECTORY_NAMES = setOf(
+    "__macosx",
+    "android",
+    "mibrowser",
+    "quarkdownloads",
+    "quarkscan",
+    "ucdownloads",
+    "qwendownloads",
+    "qq",
+    "qqmusic",
+    "baidunetdisk",
+    "baidu",
+    "netease",
+    "dlmanager",
+    "wechat",
+    "weixin",
+    "gamehub",
+    "keep",
+    "feimaonetdisk",
+    "alipay",
+    "megadownloads",
+    "mega downloads",
+    "duokan",
+    "byerun-main",
+    "com.lerist.fakelocation",
+)
+
+private val DIRECTORY_FILTER_IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp", "gif", "avif")
+
+private val NON_GALLERY_ARTIFACT_EXTENSIONS = setOf(
+    "apk",
+    "exe",
+    "so",
+    "dex",
+    "jar",
+    "class",
+    "pdf",
+    "doc",
+    "docx",
+    "xls",
+    "xlsx",
+    "ppt",
+    "pptx",
+    "py",
+    "js",
+)
+
+/**
+ * 判断目录名是否属于系统隐藏目录或明确的非漫画应用（浏览器/聊天/网盘）目录。
+ */
+internal fun shouldSkipDirectoryName(dirName: String): Boolean {
+    val trimmed = dirName.trim()
+    if (trimmed.isEmpty()) return true
+    if (trimmed.startsWith('.')) return true
+    return trimmed.lowercase() in SKIPPED_DIRECTORY_NAMES
+}
+
+/**
+ * 判断路径是否为通用存储根目录或 `/sdcard/Download` 根自身，禁止将根下的零散图片直接当作单个画廊导入。
+ */
+internal fun isGenericDownloadRootPath(
+    canonicalDirPath: String,
+    externalStorageRoot: String,
+): Boolean {
+    val normalizedPath = canonicalDirPath.trimEnd('/').ifEmpty { "/" }
+    val normalizedRoot = externalStorageRoot.trimEnd('/').ifEmpty { "/" }
+    return normalizedPath == normalizedRoot ||
+        normalizedPath == "$normalizedRoot/Download" ||
+        normalizedPath == "$normalizedRoot/download"
+}
+
+/**
+ * 校验本地目录内容是否符合画廊结构：
+ * - 含 `.ehviewer` 或 `ComicInfo.xml` 时：至少 1 张真实图片即可；
+ * - 无明确元数据时：存在软件/文档产物直接拒绝，且需达到最小图片张数（普通自动扫 >= 2 张）。
+ */
+internal fun isValidGalleryDirectoryEntries(
+    entries: List<String>,
+    hasExplicitMeta: Boolean,
+    allowSingleImage: Boolean,
+): Boolean {
+    var imageCount = 0
+    for (name in entries) {
+        if (name.startsWith('.')) continue
+        if (name.equals("thumb.webp", ignoreCase = true)) continue
+        val ext = name.substringAfterLast('.', "").lowercase()
+        if (ext in DIRECTORY_FILTER_IMAGE_EXTENSIONS) {
+            imageCount++
+        } else if (!hasExplicitMeta && ext in NON_GALLERY_ARTIFACT_EXTENSIONS) {
+            return false
+        }
+    }
+    if (imageCount <= 0) return false
+    if (hasExplicitMeta) return true
+    return imageCount >= if (allowSingleImage) 1 else 2
+}
+
+/**
+ * 校验压缩包（`.cbz` / `.zip`）内部是否真正构成漫画画廊：
+ * - `.cbz` 含至少 1 张有效图片即可；
+ * - 普通 `.zip` 若内含 `.ehviewer` 或 `ComicInfo.xml` 且有图则直接通过；否则拒绝含程序/办公文档的压缩包，
+ *   并要求至少包含 3 张图片且图片占有效文件数 >= 50%。
+ */
+internal fun isValidGalleryArchiveEntries(
+    fileName: String,
+    entryNames: List<String>,
+): Boolean {
+    val archiveExt = fileName.substringAfterLast('.', "").lowercase()
+    var hasMeta = false
+    var imageCount = 0
+    var otherFileCount = 0
+    for (rawName in entryNames) {
+        if (rawName.endsWith('/')) continue
+        val normalized = rawName.replace('\\', '/')
+        if (normalized.startsWith("__MACOSX/") || normalized.contains("/__MACOSX/")) continue
+        val base = normalized.substringAfterLast('/')
+        if (base.startsWith("._")) continue
+        if (base == COMIC_INFO_FILE || base == SPIDER_INFO_FILENAME) {
+            hasMeta = true
+            continue
+        }
+        if (base.equals("thumb.webp", ignoreCase = true)) continue
+        val ext = base.substringAfterLast('.', "").lowercase()
+        if (ext in DIRECTORY_FILTER_IMAGE_EXTENSIONS) {
+            imageCount++
+        } else if (ext.isNotEmpty()) {
+            if (archiveExt != "cbz" && ext in NON_GALLERY_ARTIFACT_EXTENSIONS) {
+                return false
+            }
+            otherFileCount++
+        }
+    }
+    if (imageCount <= 0) return false
+    if (archiveExt == "cbz" || hasMeta) return true
+    val totalFiles = imageCount + otherFileCount
+    return imageCount >= 3 && totalFiles > 0 && imageCount * 2 >= totalFiles
+}
+
+/**
+ * 解析压缩包对应的 GID：文件名以 5 位及以上 E-Hentai GID 开头时复用该正整数 GID，以自动合并同画廊目录；
+ * 否则回退到基于规范化路径的稳定负数本地 GID。
+ */
+internal fun resolveArchiveGid(
+    fileName: String,
+    canonicalFilePath: String,
+): Long {
+    val base = fileName.substringBeforeLast('.', fileName)
+    val dashCandidate = base.substringBefore('-').trim().toLongOrNull()
+    val underCandidate = base.substringBefore('_').trim().toLongOrNull()
+    val parsed = dashCandidate ?: underCandidate
+    if (parsed != null && parsed >= MIN_FOLDER_GALLERY_GID) {
+        return parsed
+    }
+    return LocalGalleryScanner.stableLocalArchiveGid(canonicalFilePath)
+}
+
+/**
+ * 根据磁盘真实图片数量与 `.ehviewer` 元数据记录页数判断下载完成态：
+ * 当位于应用主下载目录且具备有效远程标识、实际落地页数少于 `spiderPages` 时，标记为未下完可续传状态。
+ */
+internal fun resolveLocalDownloadCompletion(
+    actualImages: Int,
+    spiderPages: Int?,
+    isInsideAppDownloadDir: Boolean,
+    hasValidRemoteIdentity: Boolean,
+): Pair<Int, Int> {
+    if (isInsideAppDownloadDir &&
+        hasValidRemoteIdentity &&
+        spiderPages != null &&
+        spiderPages > actualImages
+    ) {
+        return spiderPages to DownloadInfo.STATE_NONE
+    }
+    return actualImages to DownloadInfo.STATE_FINISH
 }
 
 internal data class ImportTarget(

@@ -38,11 +38,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.onVisibilityChanged
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.toSize
 import coil3.BitmapImage
@@ -251,6 +254,16 @@ fun PagerItem(
                 }
                 val grayScale by Settings.grayScale.collectAsState()
                 val invert by Settings.invertedColors.collectAsState()
+                val enhanceModeRaw by Settings.imageEnhanceMode.collectAsState()
+                val enhanceStrength by Settings.imageEnhanceStrength.collectAsState()
+                val enhanceMode = ReaderImageEnhanceMode.fromPrefValue(enhanceModeRaw)
+                var drawnSize by remember { mutableStateOf(IntSize.Zero) }
+                val enhanceEffect = rememberImageEnhanceRenderEffect(
+                    mode = enhanceMode,
+                    strengthPercent = enhanceStrength,
+                    drawnSize = drawnSize,
+                    intrinsicSize = displayPainter.intrinsicSize,
+                )
                 Image(
                     // DrawablePainter <: RememberObserver
                     painter = remember(displayPainter) { displayPainter },
@@ -259,7 +272,12 @@ fun PagerItem(
                         onVisibilityChanged(minDurationMs = 33, minFractionVisible = 0.5f) {
                             displayDrawable!!.setVisible(it, false)
                         }
-                    }.then(contentModifier).fillMaxSize(),
+                    }.then(contentModifier)
+                        .fillMaxSize()
+                        .onSizeChanged { drawnSize = it }
+                        .thenIf(enhanceEffect != null) {
+                            graphicsLayer { renderEffect = enhanceEffect }
+                        },
                     contentScale = contentScale,
                     colorFilter = when {
                         grayScale && invert -> grayScaleAndInvertFilter

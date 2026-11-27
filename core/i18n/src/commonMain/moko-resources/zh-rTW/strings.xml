@@ -656,5 +656,18 @@
     <string name="download_scan_progress_metadata">正在補全畫廊資訊 (%1$d/%2$d)…</string>
     <string name="download_scan_complete_summary">本地掃描完成：發現 %1$d 項，新增 %2$d 項，補全資訊 %3$d 項</string>
     <string name="download_manual_sort_list_hint">已切換至列表檢視，可拖曳右側圖示調整順序</string>
+    <string name="pref_color_filter_presets">護眼快捷預設</string>
+    <string name="color_filter_preset_warm">暖黃護眼</string>
+    <string name="color_filter_preset_soft_dim">柔和暗灰</string>
+    <string name="color_filter_preset_reset">重設</string>
+    <string name="download_duplicate_banner_title">發現 %1$d 組同名新舊版本畫廊</string>
+    <string name="download_duplicate_banner_summary">舊版 #%1$d（%2$dP） → 新版 #%3$d（%4$dP）</string>
+    <string name="download_duplicate_action_handle">處理</string>
+    <string name="download_duplicate_action_ignore">忽略</string>
+    <string name="download_duplicate_dialog_title">處理同名新舊版本畫廊</string>
+    <string name="download_duplicate_action_merge">合併到新版（復用舊頁、補齊後刪舊版）</string>
+    <string name="download_duplicate_action_delete_old">直接刪除舊版（保留新版並保留進度）</string>
+    <string name="download_duplicate_action_ignore_group">暫不處理（不再提示此組）</string>
+    <string name="download_duplicate_deleted_toast">已刪除舊版本並保留新版</string>
     <!-- Tachiyomi Reader End-->
 </resources>

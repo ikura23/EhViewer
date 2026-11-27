@@ -249,4 +249,81 @@ class LocalGalleryScannerTest {
         assertNull(readStreamBytesLimited(ByteArrayInputStream(overLimit), 1024L))
         assertNull(readStreamBytesLimited(ByteArrayInputStream(ByteArray(0)), 1024L))
     }
+
+    @Test
+    fun filtersNonGalleryAppDirectoriesAndGenericDownloadRoots() {
+        assertTrue(shouldSkipDirectoryName(".csj"))
+        assertTrue(shouldSkipDirectoryName("MiBrowser"))
+        assertTrue(shouldSkipDirectoryName("QuarkDownloads"))
+        assertTrue(shouldSkipDirectoryName("QQ"))
+        assertTrue(shouldSkipDirectoryName("DLManager"))
+        assertTrue(shouldSkipDirectoryName("netease"))
+        assertFalse(shouldSkipDirectoryName("EhViewer"))
+        assertFalse(shouldSkipDirectoryName("4203956-[DyDy_cos] Animated Collection"))
+
+        assertTrue(isGenericDownloadRootPath("/storage/emulated/0/Download", storageRoot))
+        assertTrue(isGenericDownloadRootPath("/storage/emulated/0/download/", storageRoot))
+        assertTrue(isGenericDownloadRootPath("/storage/emulated/0", storageRoot))
+        assertFalse(isGenericDownloadRootPath("/storage/emulated/0/EhViewer/download", storageRoot))
+    }
+
+    @Test
+    fun validatesGalleryDirectoriesAndArchivesStrictly() {
+        assertTrue(isValidGalleryDirectoryEntries(listOf(".ehviewer", "00000001.webp"), hasExplicitMeta = true, allowSingleImage = false))
+        assertFalse(isValidGalleryDirectoryEntries(listOf("photo.jpg"), hasExplicitMeta = false, allowSingleImage = false))
+        assertTrue(isValidGalleryDirectoryEntries(listOf("photo.jpg"), hasExplicitMeta = false, allowSingleImage = true))
+        assertFalse(isValidGalleryDirectoryEntries(listOf("1.png", "2.png", "manual.pdf"), hasExplicitMeta = false, allowSingleImage = false))
+        assertTrue(isValidGalleryDirectoryEntries(listOf("01.jpg", "02.jpg", "notes.txt"), hasExplicitMeta = false, allowSingleImage = false))
+
+        assertTrue(isValidGalleryArchiveEntries("sample.cbz", listOf("01.jpg")))
+        assertFalse(isValidGalleryArchiveEntries("软件.zip", listOf("1.png", "2.png", "3.png", "app.apk")))
+        assertFalse(isValidGalleryArchiveEntries("作业.zip", listOf("cover.jpg", "1.jpg", "report.docx", "script.py")))
+        assertFalse(isValidGalleryArchiveEntries("双图.zip", listOf("1.jpg", "2.jpg")))
+        assertTrue(isValidGalleryArchiveEntries("漫画.zip", listOf("1.jpg", "2.jpg", "3.jpg", "readme.txt")))
+        assertTrue(isValidGalleryArchiveEntries("双图带元数据.zip", listOf(".ehviewer", "1.jpg")))
+    }
+
+    @Test
+    fun resolvesArchiveGidFromPrefixAndDetectsPartialAppDownloads() {
+        assertEquals(
+            3715434L,
+            resolveArchiveGid(
+                fileName = "3715434-CunnyFunky 2025.12 GIF (to .zip",
+                canonicalFilePath = "/storage/emulated/0/EhViewer/download/3715434-CunnyFunky 2025.12 GIF (to .zip",
+            ),
+        )
+        val unnumberedArchive = resolveArchiveGid(
+            fileName = "MyCollection.cbz",
+            canonicalFilePath = "/storage/emulated/0/Comics/MyCollection.cbz",
+        )
+        assertTrue(unnumberedArchive < 0L)
+
+        assertEquals(
+            935 to DownloadInfo.STATE_NONE,
+            resolveLocalDownloadCompletion(
+                actualImages = 60,
+                spiderPages = 935,
+                isInsideAppDownloadDir = true,
+                hasValidRemoteIdentity = true,
+            ),
+        )
+        assertEquals(
+            60 to DownloadInfo.STATE_FINISH,
+            resolveLocalDownloadCompletion(
+                actualImages = 60,
+                spiderPages = 60,
+                isInsideAppDownloadDir = true,
+                hasValidRemoteIdentity = true,
+            ),
+        )
+        assertEquals(
+            60 to DownloadInfo.STATE_FINISH,
+            resolveLocalDownloadCompletion(
+                actualImages = 60,
+                spiderPages = 935,
+                isInsideAppDownloadDir = false,
+                hasValidRemoteIdentity = true,
+            ),
+        )
+    }
 }

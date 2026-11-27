@@ -24,7 +24,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.ehviewer.core.ui.component.IntSliderState
+import com.hippo.ehviewer.gallery.PageLoader
 import com.hippo.ehviewer.ui.main.NavigationIcon
+import com.hippo.ehviewer.ui.reader.ReaderSeekbarPreviewCard
 import com.ramcosta.composedestinations.navigation.DestinationsNavigator
 
 private val animationSpec = tween<IntOffset>(200)
@@ -38,7 +40,9 @@ fun BoxScope.ReaderAppBars(
     showSeekBar: Boolean,
     slider: IntSliderState,
     totalPages: Int,
+    pageLoader: PageLoader,
     onSliderValueChange: (Int) -> Unit,
+    onSliderValueChangeFinished: () -> Unit = {},
     onClickSettings: () -> Unit,
 ) {
     val backgroundColor = BottomAppBarDefaults.containerColor.copy(alpha = if (isSystemInDarkTheme()) 0.9f else 0.95f)
@@ -70,6 +74,14 @@ fun BoxScope.ReaderAppBars(
                     totalPages = totalPages,
                     onSliderValueChange = onSliderValueChange,
                     containerColor = backgroundColor,
+                    onSliderValueChangeFinished = onSliderValueChangeFinished,
+                    previewContent = { pageOneBased ->
+                        ReaderSeekbarPreviewCard(
+                            pageLoader = pageLoader,
+                            pageOneBased = pageOneBased,
+                            totalPages = totalPages,
+                        )
+                    },
                 )
             }
             BottomReaderBar(onClickSettings = onClickSettings, containerColor = backgroundColor)

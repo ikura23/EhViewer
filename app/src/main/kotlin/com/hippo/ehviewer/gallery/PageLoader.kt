@@ -155,6 +155,19 @@ abstract class PageLoader(
 
     private fun peekHot(index: Int): Image? = synchronized(this) { hotImages[index] }
 
+    /**
+     * 只读探测当前内存中已解码的页面图像，不触发任何加载或网络请求。
+     */
+    fun peekCachedImage(index: Int): Image? {
+        if (index !in 0 until size) return null
+        return peekHot(index) ?: lock.read { cache[index] }
+    }
+
+    /**
+     * 打开本地文件或磁盘缓存中的只读预览源；未缓存或已关闭时返回 `null`，绝不发起网络请求。
+     */
+    open fun openCachedPreviewSource(index: Int): ImageSource? = null
+
     private fun pinHot(index: Int, image: Image) {
         val existing = hotImages[index]
         if (existing === image) return

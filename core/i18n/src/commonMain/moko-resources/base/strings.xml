@@ -696,5 +696,24 @@
     <string name="download_scan_progress_metadata">Fetching gallery metadata (%1$d/%2$d)…</string>
     <string name="download_scan_complete_summary">Local scan finished: found %1$d, imported %2$d, updated %3$d</string>
     <string name="download_manual_sort_list_hint">Switched to list view. Drag the handle on the right to reorder.</string>
+    <string name="pref_color_filter_presets">Quick presets</string>
+    <string name="color_filter_preset_warm">Warm eye-care</string>
+    <string name="color_filter_preset_soft_dim">Soft dim</string>
+    <string name="color_filter_preset_reset">Reset</string>
+    <string name="download_duplicate_banner_title">Found %1$d duplicate version group(s)</string>
+    <string name="download_duplicate_banner_summary">Old #%1$d (%2$dP) → New #%3$d (%4$dP)</string>
+    <string name="download_duplicate_action_handle">Resolve</string>
+    <string name="download_duplicate_action_ignore">Ignore</string>
+    <string name="download_duplicate_dialog_title">Resolve duplicate gallery versions</string>
+    <string name="download_duplicate_action_merge">Merge into new version (reuse pages &amp; replace old)</string>
+    <string name="download_duplicate_action_delete_old">Delete old version (keep new &amp; reading progress)</string>
+    <string name="download_duplicate_action_ignore_group">Ignore (don\'t ask again for this pair)</string>
+    <string name="download_duplicate_deleted_toast">Old version deleted; new version kept</string>
+    <string name="pref_image_enhance">Image enhancement (GPU)</string>
+    <string name="image_enhance_off">Off</string>
+    <string name="image_enhance_sharpen">Crisp sharpen</string>
+    <string name="image_enhance_anime">Anime enhance</string>
+    <string name="pref_image_enhance_strength">Strength</string>
+    <string name="image_enhance_requires_android_13">Requires Android 13 or higher</string>
     <!-- Tachiyomi Reader End-->
 </resources>

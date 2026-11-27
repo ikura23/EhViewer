@@ -308,6 +308,29 @@ class SpiderDen(val info: GalleryInfo) {
         }
     }
 
+    /**
+     * 安全尝试读取已缓存在磁盘或下载目录中的图像源，缺失时返回 `null` 而不抛异常。
+     */
+    fun getImageSourceOrNull(index: Int): PathSource? = runCatching {
+        val key = getImageKey(gid, index)
+        val snapshot = sCache.openSnapshot(key)
+        if (snapshot != null) {
+            return object : PathSource, AutoCloseable by snapshot {
+                override val source = snapshot.data
+                override val type by lazy {
+                    snapshot.metadata.toFile().readText()
+                }
+            }
+        }
+        val source = findImageFile(index) ?: return null
+        val ext = FileUtils.getExtensionFromFilename(source.name) ?: return null
+        object : PathSource {
+            override val source = source
+            override val type = ext
+            override fun close() = Unit
+        }
+    }.getOrNull()
+
     suspend fun archive() = saveAsCbz && downloadDir?.run {
         val finalFile = resolve(archiveName)
         val tempFile = resolve("$archiveName.tmp")

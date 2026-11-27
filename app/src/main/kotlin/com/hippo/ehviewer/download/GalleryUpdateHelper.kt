@@ -30,6 +30,7 @@ import com.hippo.ehviewer.spider.saveToCache
 import com.hippo.ehviewer.spider.write
 import com.hippo.ehviewer.util.FileUtils
 import com.hippo.ehviewer.util.displayString
+import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.ZipInputStream
 import kotlinx.coroutines.CoroutineScope
@@ -42,6 +43,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.io.asInputStream
+import kotlinx.io.readByteArray
 import moe.tarsin.coroutines.runSuspendCatching
 import okio.Path
 import splitties.init.appCtx
@@ -140,9 +142,11 @@ object GalleryUpdateTracker {
                 prepResult = prep
                 if (replaceOld) {
                     DownloadManager.registerUpgradeReplacement(targetInfo.gid, oldInfo.gid)
+                    writeUpgradeReplaceMarker(getGalleryDownloadDir(targetInfo), oldInfo.gid)
                     registeredNewGid = targetInfo.gid
                 } else {
                     DownloadManager.clearUpgradeReplacement(targetInfo.gid)
+                    deleteUpgradeReplaceMarker(getGalleryDownloadDir(targetInfo))
                 }
                 _progress.update {
                     if (!it.running) it else it.copy(
@@ -162,6 +166,7 @@ object GalleryUpdateTracker {
                 logcat(TAG, e)
                 registeredNewGid?.let { gid ->
                     runSuspendCatching { DownloadManager.clearUpgradeReplacement(gid) }
+                    runCatching { deleteUpgradeReplaceMarker(getGalleryDownloadDir(BaseGalleryInfo(gid, ""))) }
                 }
                 errorMsg = e.displayString()
             } finally {
@@ -184,7 +189,64 @@ object GalleryUpdateTracker {
 }
 
 private const val TAG = "GalleryUpdateHelper"
+const val UPGRADE_REPLACE_FILENAME = ".ehviewer.replaces"
 private val ENTRY_INDEX_REGEX = Regex("""^(?:.*/)?0*(\d+)\.([A-Za-z0-9]+)$""")
+
+/**
+ * 将待替换的旧版 GID 持久化写入新版画廊目录内的标记文件，
+ * 避免用户在更新途中重装或覆盖安装 App 导致旧版替换关系丢失。
+ */
+internal fun writeUpgradeReplaceMarker(dir: Path, oldGid: Long) {
+    if (oldGid <= 0L) return
+    runCatching {
+        val raw = dir.toString()
+        if (!raw.startsWith("content:")) {
+            val physicalDir = File(raw)
+            if (!physicalDir.exists()) physicalDir.mkdirs()
+            File(physicalDir, UPGRADE_REPLACE_FILENAME).writeText(oldGid.toString(), Charsets.UTF_8)
+        } else {
+            dir.mkdirs()
+            dir.resolve(UPGRADE_REPLACE_FILENAME).write {
+                write(oldGid.toString().toByteArray(Charsets.UTF_8))
+            }
+        }
+    }.onFailure { logcat(TAG, it) }
+}
+
+/**
+ * 从指定目录读取待替换旧版 GID（兼容直接物理路径及 SAF 文档路径）。
+ */
+internal fun readUpgradeReplaceMarker(dir: Path?): Long? {
+    dir ?: return null
+    return runCatching {
+        val raw = dir.toString()
+        val text = if (!raw.startsWith("content:")) {
+            val file = File(raw, UPGRADE_REPLACE_FILENAME)
+            if (!file.isFile) return@runCatching null
+            file.readText(Charsets.UTF_8)
+        } else {
+            val marker = dir.resolve(UPGRADE_REPLACE_FILENAME)
+            if (!marker.exists() || !marker.isFile) return@runCatching null
+            marker.read { readByteArray().toString(Charsets.UTF_8) }
+        }
+        text.trim().toLongOrNull()?.takeIf { it > 0L }
+    }.getOrNull()
+}
+
+/**
+ * 删除指定目录内的升级替换标记文件。
+ */
+internal fun deleteUpgradeReplaceMarker(dir: Path?) {
+    dir ?: return
+    runCatching {
+        val raw = dir.toString()
+        if (!raw.startsWith("content:")) {
+            File(raw, UPGRADE_REPLACE_FILENAME).takeIf { it.exists() }?.delete()
+        } else {
+            dir.resolve(UPGRADE_REPLACE_FILENAME).delete()
+        }
+    }
+}
 
 /**
  * 从详情页的 `parent` 链接中提取父画廊 GID。

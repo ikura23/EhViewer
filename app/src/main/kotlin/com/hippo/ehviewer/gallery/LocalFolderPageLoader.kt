@@ -37,6 +37,9 @@ class LocalFolderPageLoader(
         }
     }
 
+    override fun openCachedPreviewSource(index: Int): ImageSource? =
+        if (index in files.indices) openSource(index) else null
+
     override fun prefetchPages(pages: List<Int>, bounds: IntRange) = Unit
 
     override fun onRequest(index: Int, force: Boolean, orgImg: Boolean) {

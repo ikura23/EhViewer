@@ -5,14 +5,23 @@ import android.graphics.Movie
 import android.graphics.drawable.Animatable
 import android.net.Uri
 import android.os.Environment
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import coil3.DrawableImage
@@ -79,7 +88,8 @@ fun AnimatedPreviewImage(
 
     when (val state = previewState) {
         PreviewDecodeState.Pending -> {
-            // 等待极速文件头探测时暂不做重复解码，避免 GIF 被系统 AnimatedImageDecoder 抢先解码后再重绘闪烁
+            // 等待极速文件头探测时保留柔和占位色，避免出现闪烁空白。
+            Box(modifier = modifier.background(MaterialTheme.colorScheme.surfaceVariant))
         }
         is PreviewDecodeState.Gif -> {
             val speedGif = remember(state.movie) {
@@ -89,6 +99,13 @@ fun AnimatedPreviewImage(
                 }
             }
             val gifPainter = remember(speedGif) { DrawablePainter(speedGif) }
+            var visible by remember(state.movie) { mutableStateOf(false) }
+            LaunchedEffect(state.movie) { visible = true }
+            val alpha by animateFloatAsState(
+                targetValue = if (visible) 1f else 0f,
+                animationSpec = tween(durationMillis = 150),
+                label = "GifPreviewFade",
+            )
             DisposableEffect(speedGif, speed) {
                 speedGif.looping = true
                 speedGif.speed = speed
@@ -102,7 +119,7 @@ fun AnimatedPreviewImage(
             Image(
                 painter = gifPainter,
                 contentDescription = null,
-                modifier = modifier,
+                modifier = modifier.graphicsLayer { this.alpha = alpha },
                 contentScale = contentScale,
             )
         }
@@ -111,11 +128,12 @@ fun AnimatedPreviewImage(
                 val builder = ImageRequest.Builder(context)
                     .data(data)
                     .diskCacheKey(cacheKey)
-                    .crossfade(false)
-                // 仅依据 IO 协程已完成的文件头探测结果决定是否禁用内存缓存共享，彻底消除组合线程读盘
+                // 仅静态图开启 150ms 淡入；动图保持禁用 crossfade，避免 CrossfadeDrawable 包装导致倍速/循环识别失效。
                 if (state.isAnimated) {
+                    builder.crossfade(false)
                     builder.memoryCachePolicy(CachePolicy.DISABLED)
                 } else {
+                    builder.crossfade(150)
                     builder.memoryCacheKey("$sceneTag:$cacheKey")
                 }
                 builder.build()
