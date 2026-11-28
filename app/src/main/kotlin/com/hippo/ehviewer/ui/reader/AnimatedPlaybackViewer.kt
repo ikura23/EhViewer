@@ -129,8 +129,9 @@ fun AnimatedPlaybackViewer(
         }
     }
 
-    // 仅在真正切页或手动重播时重置 playbackStarted，避免调整预加载数时清零导致切页卡死。
+    // 仅在真正切页或手动重播时重置 playbackStarted 并取消旧页自动续跳，避免调整预加载数时清零导致切页卡死。
     LaunchedEffect(pageLoader, currentIndex, playbackGeneration) {
+        advanceJob?.cancel()
         AnimatedPlaybackSession.playbackStarted = false
     }
 

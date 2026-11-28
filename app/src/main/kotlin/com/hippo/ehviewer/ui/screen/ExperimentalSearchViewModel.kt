@@ -113,7 +113,7 @@ class ExperimentalSearchViewModel : ViewModel() {
             }
             return
         }
-        if (!modeChanged && currentState.isInitialLoading && activeJobs[tabMode]?.isActive == true) {
+        if (!modeChanged && (currentState.isInitialLoading || currentState.isRefreshing || currentState.isLoadingMore) && activeJobs[tabMode]?.isActive == true) {
             return
         }
 
@@ -138,26 +138,42 @@ class ExperimentalSearchViewModel : ViewModel() {
                 session.initialized = true
 
                 // 先读轻量磁盘缓存并动态补译中文，命中即秒出；如果缓存已过期再后台静默拉取最新高星批次
-                val cached = ExperimentalRecommendationCache.load(appCtx, site, nonHMode, tabMode)
-                if (cached != null) {
-                    val (rawCachedItems, isFresh) = cached
-                    val cachedItems = refreshRecommendedTagTitles(rawCachedItems, ::translateRecommendedTag)
-                    cachedItems.forEach { item ->
-                        if (item.tagKey !in session.seenTagKeys) session.seenTagKeys.addLast(item.tagKey)
-                        session.usedCoverGids.add(item.coverGallery.gid)
-                        item.coverGallery.thumbKey?.let { session.usedCoverThumbKeys.add(it) }
+                try {
+                    val cached = ExperimentalRecommendationCache.load(appCtx, site, nonHMode, tabMode)
+                    if (cached != null) {
+                        val (rawCachedItems, isFresh) = cached
+                        val cachedItems = refreshRecommendedTagTitles(rawCachedItems, ::translateRecommendedTag)
+                        cachedItems.forEach { item ->
+                            if (item.tagKey !in session.seenTagKeys) session.seenTagKeys.addLast(item.tagKey)
+                            session.usedCoverGids.add(item.coverGallery.gid)
+                            item.coverGallery.thumbKey?.let { session.usedCoverThumbKeys.add(it) }
+                        }
+                        flow.update {
+                            it.copy(
+                                items = cachedItems,
+                                isInitialLoading = false,
+                                isRefreshing = false,
+                                isLoadingMore = false,
+                                errorMessage = null,
+                                nonHMode = nonHMode,
+                                site = site,
+                            )
+                        }
+                        prefetchTopCovers(tabMode, cachedItems)
+                        if (isFresh) return@withLock
                     }
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (e: Throwable) {
                     flow.update {
                         it.copy(
-                            items = cachedItems,
                             isInitialLoading = false,
-                            errorMessage = null,
-                            nonHMode = nonHMode,
-                            site = site,
+                            isRefreshing = false,
+                            isLoadingMore = false,
+                            errorMessage = e.message ?: "Load failed",
                         )
                     }
-                    prefetchTopCovers(tabMode, cachedItems)
-                    if (isFresh) return@withLock
+                    return@withLock
                 }
                 fetchBatch(tabMode = tabMode, nonHMode = nonHMode, site = site, isRefresh = false, isLoadMore = false)
             }

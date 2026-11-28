@@ -1327,35 +1327,33 @@ object DownloadManager : CoroutineScope {
         }
         if (patches.isEmpty()) return
 
-        // 磁盘读取并发完成后，统一进入 commands 串行队列写回内存模型，避免与下载完成回调发生数据竞争。
-        val (galleryInfoList, artistUpdates) = commandResult {
+        // 磁盘读取并发完成后，统一进入 commands 串行队列二次校验并写回内存模型与持久层，避免竞态覆写。
+        command {
             val galleries = ArrayList<GalleryEntity>(patches.size)
-            val artists = ArrayList<Pair<Long, List<DownloadArtist>>>()
             patches.forEach { patch ->
                 val info = patch.info
+                if (!containDownloadInfo(info.gid)) return@forEach
                 var galleryDirty = false
-                if (patch.newPages != null) {
+                if (patch.newPages != null && patch.newPages > 0 && info.pages == 0) {
                     info.pages = patch.newPages
                     galleryDirty = true
                 }
-                if (patch.newSimpleTags != null) {
+                if (patch.newSimpleTags != null && info.simpleTags == null) {
                     info.simpleTags = patch.newSimpleTags
                     galleryDirty = true
                 }
-                if (patch.newArtists != null) {
+                if (patch.newArtists != null && info.artistInfoList.isEmpty()) {
                     info.artistInfoList = patch.newArtists
-                    artists += info.gid to patch.newArtists
+                    persist { EhDB.putDownloadArtist(info.gid, patch.newArtists) }
                 }
                 if (galleryDirty) {
                     galleries += info.galleryInfo
                 }
             }
-            galleries to artists
+            if (galleries.isNotEmpty()) {
+                persist { EhDB.updateGalleryInfo(galleries) }
+            }
         }
-        artistUpdates.forEach { (gid, updateList) ->
-            EhDB.putDownloadArtist(gid, updateList)
-        }
-        if (galleryInfoList.isNotEmpty()) EhDB.updateGalleryInfo(galleryInfoList)
     }
 
     private class TaskListener : OnSpiderListener {

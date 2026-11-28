@@ -76,11 +76,18 @@ internal class ScanRunGate {
         val gen = ++generation
         val prev = pendingCancelledJob
         pendingCancelledJob = null
-        activeJob = launchBlock(gen, prev)
-        true
+        try {
+            activeJob = launchBlock(gen, prev)
+            true
+        } catch (t: Throwable) {
+            running = false
+            activeJob = null
+            pendingCancelledJob = prev
+            throw t
+        }
     }
 
-    fun cancel(): Job? = synchronized(lock) {
+    fun cancel(onCancelled: () -> Unit = {}): Job? = synchronized(lock) {
         generation++
         running = false
         val job = activeJob
@@ -89,6 +96,7 @@ internal class ScanRunGate {
             pendingCancelledJob = job
             job.cancel()
         }
+        onCancelled()
         job
     }
 
@@ -218,9 +226,10 @@ object LocalGalleryScanner {
      * 取消当前正在后台运行的本地画廊扫描任务。
      */
     fun cancelScan() {
-        scanGate.cancel()
-        _scanProgress.update { prev ->
-            if (!prev.running) prev else prev.copy(running = false, stage = ScanStage.IDLE)
+        scanGate.cancel {
+            _scanProgress.update { prev ->
+                if (!prev.running) prev else prev.copy(running = false, stage = ScanStage.IDLE)
+            }
         }
     }
 

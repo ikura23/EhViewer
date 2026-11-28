@@ -110,15 +110,15 @@ android {
     val releaseVersionCode = providers.gradleProperty("releaseVersionCode").orNull
         ?.trim()
         ?.toIntOrNull()
-        ?: 180064
+        ?: 180065
 
     defaultConfig {
         applicationId = "com.ys.ehviewer"
         versionCode = releaseVersionCode
         versionName = if (snapshot) {
-            "1.16.0-SNAPSHOT"
+            "1.16.1-SNAPSHOT"
         } else {
-            releaseVersionProp ?: "1.16.0"
+            releaseVersionProp ?: "1.16.1"
         }
         buildConfigField("boolean", "SNAPSHOT", "$snapshot")
         buildConfigField("String", "RAW_VERSION_NAME", "\"$versionName\"")

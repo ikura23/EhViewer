@@ -145,10 +145,10 @@ object GalleryUpdateTracker {
                 prepResult = prep
                 if (replaceOld) {
                     val targetDir = getGalleryDownloadDir(targetInfo)
-                    DownloadManager.registerUpgradeReplacement(targetInfo.gid, oldInfo.gid)
-                    writeUpgradeReplaceMarker(targetDir, oldInfo.gid)
-                    registeredNewGid = targetInfo.gid
                     registeredNewDir = targetDir
+                    DownloadManager.registerUpgradeReplacement(targetInfo.gid, oldInfo.gid)
+                    registeredNewGid = targetInfo.gid
+                    writeUpgradeReplaceMarker(targetDir, oldInfo.gid)
                 } else {
                     DownloadManager.clearUpgradeReplacement(targetInfo.gid)
                     deleteUpgradeReplaceMarker(getGalleryDownloadDir(targetInfo))

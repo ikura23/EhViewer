@@ -372,4 +372,26 @@ class LocalGalleryScannerTest {
             Job()
         })
     }
+
+    @Test
+    fun scanRunGateRollsBackStateWhenLaunchBlockThrows() {
+        val gate = ScanRunGate()
+        val job1 = Job()
+        assertTrue(gate.tryStart { _, _ -> job1 })
+        assertEquals(job1, gate.cancel())
+
+        val failed = runCatching {
+            gate.tryStart { _, _ -> error("boom") }
+        }
+        assertTrue(failed.isFailure)
+
+        var seenPrev: Job? = null
+        assertTrue(
+            gate.tryStart { _, prev ->
+                seenPrev = prev
+                Job()
+            },
+        )
+        assertEquals(job1, seenPrev)
+    }
 }
