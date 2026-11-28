@@ -35,7 +35,6 @@ import com.hippo.ehviewer.gallery.status
 import com.hippo.ehviewer.gallery.statusObserved
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
@@ -150,18 +149,11 @@ fun AnimatedPlaybackViewer(
             return@LaunchedEffect
         }
         ready = false
-        var waited = 0L
-        while (isActive && waited < PLAYBACK_READY_TIMEOUT_MILLIS) {
-            if (isTerminal(currentIndex)) {
-                ready = true
-                return@LaunchedEffect
-            }
-            if (waited % 1_000L == 0L) {
-                pageLoader.request(currentIndex)
-            }
-            delay(PLAYBACK_PRELOAD_POLL_MILLIS)
-            waited += PLAYBACK_PRELOAD_POLL_MILLIS
-        }
+        awaitPageTerminal(
+            page = pageLoader.pages[currentIndex],
+            timeoutMillis = PLAYBACK_READY_TIMEOUT_MILLIS,
+            onPeriodicRetry = { pageLoader.request(currentIndex) },
+        )
         ready = true
     }
 
@@ -171,28 +163,20 @@ fun AnimatedPlaybackViewer(
         if (immediateNext >= pageLoader.size) return
         advanceJob?.cancel()
         advanceJob = scope.launch {
-            var target: Int? = null
-            var waited = 0L
-            while (isActive && waited < PLAYBACK_NEXT_TIMEOUT_MILLIS) {
-                if (fromIndex != currentIndex) return@launch
-                // 优先顺序等待紧邻的下一页，避免并发解码下后页先好导致跳过未解完的下一页。
-                val nextStatus = pageLoader.pages.getOrNull(immediateNext)?.status
-                if (nextStatus is PageStatus.Ready) {
-                    target = immediateNext
-                    break
-                }
-                if (nextStatus is PageStatus.Error || nextStatus is PageStatus.Blocked) {
-                    target = (immediateNext + 1 until pageLoader.size).firstOrNull(::isReady) ?: immediateNext
-                    break
-                }
-                pageLoader.requestRange(
-                    immediateNext,
-                    minOf(pageLoader.size - 1, fromIndex + cacheAhead),
-                )
-                delay(PLAYBACK_PRELOAD_POLL_MILLIS)
-                waited += PLAYBACK_PRELOAD_POLL_MILLIS
-            }
+            val rangeEnd = minOf(pageLoader.size - 1, fromIndex + cacheAhead)
+            pageLoader.requestRange(immediateNext, rangeEnd)
+            val nextStatus = awaitPageTerminal(
+                page = pageLoader.pages[immediateNext],
+                timeoutMillis = PLAYBACK_NEXT_TIMEOUT_MILLIS,
+                onPeriodicRetry = { pageLoader.requestRange(immediateNext, rangeEnd) },
+            )
             if (fromIndex != currentIndex) return@launch
+            val target = when (nextStatus) {
+                is PageStatus.Ready -> immediateNext
+                is PageStatus.Error, is PageStatus.Blocked ->
+                    (immediateNext + 1 until pageLoader.size).firstOrNull(::isReady) ?: immediateNext
+                else -> null
+            }
             val chosen = target ?: (immediateNext until pageLoader.size).firstOrNull(::isReady)
             if (chosen != null) {
                 // Combined with the pinned next image this makes the handoff a single instant
@@ -295,7 +279,6 @@ fun AnimatedPlaybackViewer(
 
 private const val PLAYBACK_READY_TIMEOUT_MILLIS = 45_000L
 private const val PLAYBACK_NEXT_TIMEOUT_MILLIS = 8_000L
-private const val PLAYBACK_PRELOAD_POLL_MILLIS = 200L
 
 /**
  * 单页吸附提供器：将惯性预滑距离归零，使上下滑动只切换相邻上一页或下一页。

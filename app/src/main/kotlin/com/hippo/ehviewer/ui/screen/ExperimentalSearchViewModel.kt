@@ -23,6 +23,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import moe.tarsin.coroutines.runSuspendCatching
 import splitties.init.appCtx
 
 data class TabRecommendUiState(
@@ -81,7 +84,9 @@ class ExperimentalSearchViewModel : ViewModel() {
         MutableStateFlow(TabRecommendUiState())
     }
     private val sessions = RecommendTabMode.entries.associateWith { TabCursorSession() }
+    private val tabMutexes = RecommendTabMode.entries.associateWith { Mutex() }
     private val activeJobs = HashMap<RecommendTabMode, Job>()
+    private val prefetchJobs = HashMap<RecommendTabMode, Job>()
 
     private fun translateRecommendedTag(nsPrefix: String?, rawTag: String): String? {
         val canTranslate = Settings.showTagTranslations.value &&
@@ -98,81 +103,95 @@ class ExperimentalSearchViewModel : ViewModel() {
         stateFlows.getValue(tabMode).asStateFlow()
 
     fun ensureLoaded(tabMode: RecommendTabMode, nonHMode: Boolean, site: Int) {
-        val session = sessions.getValue(tabMode)
-        val modeChanged = session.nonHMode != nonHMode || session.site != site
-        val currentItems = stateFlows.getValue(tabMode).value.items
-        if (session.initialized && !modeChanged && currentItems.isNotEmpty()) {
-            val updatedItems = refreshRecommendedTagTitles(currentItems, ::translateRecommendedTag)
-            if (updatedItems !== currentItems) {
-                stateFlows.getValue(tabMode).update { it.copy(items = updatedItems) }
+        val flow = stateFlows.getValue(tabMode)
+        val currentState = flow.value
+        val modeChanged = currentState.nonHMode != nonHMode || currentState.site != site
+        if (!modeChanged && currentState.items.isNotEmpty()) {
+            val updatedItems = refreshRecommendedTagTitles(currentState.items, ::translateRecommendedTag)
+            if (updatedItems !== currentState.items) {
+                flow.update { it.copy(items = updatedItems) }
             }
             return
         }
+        if (!modeChanged && currentState.isInitialLoading && activeJobs[tabMode]?.isActive == true) {
+            return
+        }
+
+        val prevJob = activeJobs[tabMode]
+        prevJob?.cancel()
+        prefetchJobs.remove(tabMode)?.cancel()
         if (modeChanged) {
-            activeJobs[tabMode]?.cancel()
-            session.resetForNewMode(nonHMode, site)
-            stateFlows.getValue(tabMode).value = TabRecommendUiState(
+            flow.value = TabRecommendUiState(
                 isInitialLoading = true,
                 nonHMode = nonHMode,
                 site = site,
             )
-        } else if (stateFlows.getValue(tabMode).value.isInitialLoading && activeJobs[tabMode]?.isActive == true) {
-            return
         }
 
-        session.initialized = true
-        activeJobs[tabMode]?.cancel()
         activeJobs[tabMode] = viewModelScope.launch {
-            // 先读轻量磁盘缓存并动态补译中文，命中即秒出；如果缓存已过期再后台静默拉取最新高星批次
-            val cached = ExperimentalRecommendationCache.load(appCtx, site, nonHMode, tabMode)
-            if (cached != null) {
-                val (rawCachedItems, isFresh) = cached
-                val cachedItems = refreshRecommendedTagTitles(rawCachedItems, ::translateRecommendedTag)
-                cachedItems.forEach { item ->
-                    if (item.tagKey !in session.seenTagKeys) session.seenTagKeys.addLast(item.tagKey)
-                    session.usedCoverGids.add(item.coverGallery.gid)
-                    item.coverGallery.thumbKey?.let { session.usedCoverThumbKeys.add(it) }
+            prevJob?.join()
+            tabMutexes.getValue(tabMode).withLock {
+                val session = sessions.getValue(tabMode)
+                if (session.nonHMode != nonHMode || session.site != site) {
+                    session.resetForNewMode(nonHMode, site)
                 }
-                stateFlows.getValue(tabMode).update {
-                    it.copy(
-                        items = cachedItems,
-                        isInitialLoading = false,
-                        errorMessage = null,
-                        nonHMode = nonHMode,
-                        site = site,
-                    )
+                session.initialized = true
+
+                // 先读轻量磁盘缓存并动态补译中文，命中即秒出；如果缓存已过期再后台静默拉取最新高星批次
+                val cached = ExperimentalRecommendationCache.load(appCtx, site, nonHMode, tabMode)
+                if (cached != null) {
+                    val (rawCachedItems, isFresh) = cached
+                    val cachedItems = refreshRecommendedTagTitles(rawCachedItems, ::translateRecommendedTag)
+                    cachedItems.forEach { item ->
+                        if (item.tagKey !in session.seenTagKeys) session.seenTagKeys.addLast(item.tagKey)
+                        session.usedCoverGids.add(item.coverGallery.gid)
+                        item.coverGallery.thumbKey?.let { session.usedCoverThumbKeys.add(it) }
+                    }
+                    flow.update {
+                        it.copy(
+                            items = cachedItems,
+                            isInitialLoading = false,
+                            errorMessage = null,
+                            nonHMode = nonHMode,
+                            site = site,
+                        )
+                    }
+                    prefetchTopCovers(tabMode, cachedItems)
+                    if (isFresh) return@withLock
                 }
-                prefetchTopCovers(cachedItems)
-                if (isFresh) return@launch
+                fetchBatch(tabMode = tabMode, nonHMode = nonHMode, site = site, isRefresh = false, isLoadMore = false)
             }
-            fetchBatch(tabMode = tabMode, nonHMode = nonHMode, site = site, isRefresh = false, isLoadMore = false)
         }
     }
 
     fun refresh(tabMode: RecommendTabMode, nonHMode: Boolean, site: Int) {
-        activeJobs[tabMode]?.cancel()
-        val session = sessions.getValue(tabMode)
-        if (session.nonHMode != nonHMode || session.site != site) {
-            session.resetForNewMode(nonHMode, site)
-        }
-        session.initialized = true
-        session.sourceSeed += 1
-        session.nextCursor = null
-        session.nextToplistPage = 2
-        session.usedToplist = false
-        session.canFallbackNormal = false
-        // 刷新保留最近 80 个已推荐 tagKey，保证尽量不与上一轮重复，同时保留长期池循环空间
-        while (session.seenTagKeys.size > 80) {
-            session.seenTagKeys.removeFirstOrNull()
-        }
-        session.usedCoverGids.clear()
-        session.usedCoverThumbKeys.clear()
-
+        val prevJob = activeJobs[tabMode]
+        prevJob?.cancel()
+        prefetchJobs.remove(tabMode)?.cancel()
         stateFlows.getValue(tabMode).update {
             it.copy(isRefreshing = true, errorMessage = null, nonHMode = nonHMode, site = site)
         }
         activeJobs[tabMode] = viewModelScope.launch {
-            fetchBatch(tabMode = tabMode, nonHMode = nonHMode, site = site, isRefresh = true, isLoadMore = false)
+            prevJob?.join()
+            tabMutexes.getValue(tabMode).withLock {
+                val session = sessions.getValue(tabMode)
+                if (session.nonHMode != nonHMode || session.site != site) {
+                    session.resetForNewMode(nonHMode, site)
+                }
+                session.initialized = true
+                session.sourceSeed += 1
+                session.nextCursor = null
+                session.nextToplistPage = 2
+                session.usedToplist = false
+                session.canFallbackNormal = false
+                // 刷新保留最近 80 个已推荐 tagKey，保证尽量不与上一轮重复，同时保留长期池循环空间
+                while (session.seenTagKeys.size > 80) {
+                    session.seenTagKeys.removeFirstOrNull()
+                }
+                session.usedCoverGids.clear()
+                session.usedCoverThumbKeys.clear()
+                fetchBatch(tabMode = tabMode, nonHMode = nonHMode, site = site, isRefresh = true, isLoadMore = false)
+            }
         }
     }
 
@@ -181,14 +200,24 @@ class ExperimentalSearchViewModel : ViewModel() {
         if (current.isInitialLoading || current.isRefreshing || current.isLoadingMore || !current.hasMore) {
             return
         }
-        val session = sessions.getValue(tabMode)
-        if (session.nonHMode != nonHMode || session.site != site) {
+        if (current.nonHMode != nonHMode || current.site != site) {
             ensureLoaded(tabMode, nonHMode, site)
             return
         }
+        val prevJob = activeJobs[tabMode]
         stateFlows.getValue(tabMode).update { it.copy(isLoadingMore = true, errorMessage = null) }
         activeJobs[tabMode] = viewModelScope.launch {
-            fetchBatch(tabMode = tabMode, nonHMode = nonHMode, site = site, isRefresh = false, isLoadMore = true)
+            prevJob?.join()
+            tabMutexes.getValue(tabMode).withLock {
+                val session = sessions.getValue(tabMode)
+                if (session.nonHMode != nonHMode || session.site != site) {
+                    session.resetForNewMode(nonHMode, site)
+                    session.initialized = true
+                    fetchBatch(tabMode = tabMode, nonHMode = nonHMode, site = site, isRefresh = false, isLoadMore = false)
+                } else {
+                    fetchBatch(tabMode = tabMode, nonHMode = nonHMode, site = site, isRefresh = false, isLoadMore = true)
+                }
+            }
         }
     }
 
@@ -314,9 +343,9 @@ class ExperimentalSearchViewModel : ViewModel() {
             if (merged.isNotEmpty()) {
                 if (!isLoadMore) {
                     ExperimentalRecommendationCache.save(appCtx, site, nonHMode, tabMode, merged)
-                    prefetchTopCovers(merged)
+                    prefetchTopCovers(tabMode, merged)
                 } else {
-                    prefetchTopCovers(collectedItems)
+                    prefetchTopCovers(tabMode, collectedItems)
                 }
             }
         } catch (ce: CancellationException) {
@@ -336,16 +365,17 @@ class ExperimentalSearchViewModel : ViewModel() {
     /**
      * 低并发分批预热前 10 张封面进 Coil 磁盘与内存缓存，避免并发打满连接池反而拖慢首图。
      */
-    private fun prefetchTopCovers(items: List<RecommendedTagItem>) {
+    private fun prefetchTopCovers(tabMode: RecommendTabMode, items: List<RecommendedTagItem>) {
         val targets = items.take(10)
         if (targets.isEmpty()) return
-        viewModelScope.launch {
+        prefetchJobs.remove(tabMode)?.cancel()
+        prefetchJobs[tabMode] = viewModelScope.launch {
             val loader = appCtx.imageLoader
             targets.chunked(3).forEach { chunk ->
                 coroutineScope {
                     chunk.map { item ->
                         async {
-                            runCatching {
+                            runSuspendCatching {
                                 val req = ImageRequest.Builder(appCtx)
                                     .ehUrl(item.coverGallery)
                                     .build()

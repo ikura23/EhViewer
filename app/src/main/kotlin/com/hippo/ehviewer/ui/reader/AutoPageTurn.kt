@@ -5,16 +5,17 @@ import androidx.compose.foundation.pager.PagerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.hippo.ehviewer.Settings
 import com.hippo.ehviewer.collectAsState
 import com.hippo.ehviewer.gallery.PageLoader
-import com.hippo.ehviewer.gallery.PageStatus
-import com.hippo.ehviewer.gallery.status
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Advances the reader while the auto page turn preference is enabled.
@@ -79,25 +80,16 @@ private suspend fun CoroutineScope.autoAdvancePager(
     }
 }
 
-private suspend fun CoroutineScope.awaitPageReady(
+private suspend fun awaitPageReady(
     pagerState: PagerState,
     pageLoader: PageLoader,
     pageIndex: Int,
-): Boolean {
-    var waitedMillis = 0L
-    while (isActive && waitedMillis < PAGE_READY_TIMEOUT_MILLIS) {
-        when (pageLoader.pages[pageIndex].status) {
-            is PageStatus.Ready -> return true
-            is PageStatus.Error, is PageStatus.Blocked -> return false
-            else -> {
-                if (pagerState.currentPage != pageIndex) return false
-                delay(PAGE_READY_POLL_MILLIS)
-                waitedMillis += PAGE_READY_POLL_MILLIS
-            }
-        }
-    }
-    return false
-}
+): Boolean = awaitPageReadyWhileOnPage(
+    page = pageLoader.pages[pageIndex],
+    currentPageFlow = snapshotFlow { pagerState.currentPage },
+    pageIndex = pageIndex,
+    timeoutMillis = PAGE_READY_TIMEOUT_MILLIS,
+)
 
 private suspend fun CoroutineScope.autoScrollWebtoon(
     lazyListState: LazyListState,
@@ -105,14 +97,10 @@ private suspend fun CoroutineScope.autoScrollWebtoon(
     intervalMillis: Long,
 ) {
     // Wait for the first layout pass before checking whether the list can scroll.
-    var waitedMillis = 0L
-    while (
-        isActive &&
-        lazyListState.layoutInfo.totalItemsCount == 0 &&
-        waitedMillis < PAGE_READY_TIMEOUT_MILLIS
-    ) {
-        delay(PAGE_READY_POLL_MILLIS)
-        waitedMillis += PAGE_READY_POLL_MILLIS
+    if (lazyListState.layoutInfo.totalItemsCount == 0) {
+        withTimeoutOrNull(PAGE_READY_TIMEOUT_MILLIS) {
+            snapshotFlow { lazyListState.layoutInfo.totalItemsCount }.first { it > 0 }
+        }
     }
 
     while (isActive) {
@@ -138,25 +126,15 @@ private suspend fun CoroutineScope.autoScrollWebtoon(
     }
 }
 
-private suspend fun CoroutineScope.awaitWebtoonPageReady(
+private suspend fun awaitWebtoonPageReady(
     lazyListState: LazyListState,
     pageLoader: PageLoader,
     pageIndex: Int,
-): Boolean {
-    var waitedMillis = 0L
-    while (isActive && waitedMillis < PAGE_READY_TIMEOUT_MILLIS) {
-        when (pageLoader.pages[pageIndex].status) {
-            is PageStatus.Ready -> return true
-            is PageStatus.Error, is PageStatus.Blocked -> return false
-            else -> {
-                if (lazyListState.currentWebtoonPageIndex() != pageIndex) return false
-                delay(PAGE_READY_POLL_MILLIS)
-                waitedMillis += PAGE_READY_POLL_MILLIS
-            }
-        }
-    }
-    return false
-}
+): Boolean = awaitPageReadyWhileOnPage(
+    page = pageLoader.pages[pageIndex],
+    currentPageFlow = snapshotFlow { lazyListState.currentWebtoonPageIndex() },
+    pageIndex = pageIndex,
+    timeoutMillis = PAGE_READY_TIMEOUT_MILLIS,
+)
 
 private const val PAGE_READY_TIMEOUT_MILLIS = 15_000L
-private const val PAGE_READY_POLL_MILLIS = 250L

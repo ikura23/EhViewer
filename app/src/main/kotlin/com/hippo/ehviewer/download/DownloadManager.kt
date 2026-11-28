@@ -1085,8 +1085,10 @@ object DownloadManager : CoroutineScope {
         }
     }
 
-    suspend fun sortDownloads(mode: SortMode) = mutateAllInfoList {
-        it.sortWith(mode.comparator(manualOrderRanks))
+    suspend fun sortDownloads(mode: SortMode) = command {
+        mutateAllInfoList {
+            it.sortWith(mode.comparator(manualOrderRanks))
+        }
     }
 
     private fun pruneManualOrderOwned(removedGids: Collection<Long>) {
@@ -1280,8 +1282,15 @@ object DownloadManager : CoroutineScope {
         }
     }
 
+    private data class LocalMetadataPatch(
+        val info: DownloadInfo,
+        val newPages: Int?,
+        val newSimpleTags: List<String>?,
+        val newArtists: List<DownloadArtist>?,
+    )
+
     suspend fun readMetadataFromLocal() {
-        val list = sortMutex.withLock {
+        val snapshot = sortMutex.withLock {
             allInfoList.mapNotNull {
                 val updateGallery = it.pages == 0 || it.simpleTags == null
                 val updateArtist = it.artistInfoList.isEmpty()
@@ -1291,54 +1300,60 @@ object DownloadManager : CoroutineScope {
                     null
                 }
             }
-        }.parMapNotNull(concurrency = 5) { (info, updateGallery, updateArtist) ->
+        }
+        val patches = snapshot.parMapNotNull(concurrency = 5) { (info, updateGallery, updateArtist) ->
             info.downloadDir?.run {
                 val comicInfo = find(COMIC_INFO_FILE)?.let { readComicInfo(it) }
                 if (comicInfo != null) {
-                    val galleryInfo = if (updateGallery) {
-                        info.pages = comicInfo.pageCount
-                        info.simpleTags = comicInfo.toSimpleTags()
-                        info.galleryInfo
+                    val newPages = if (updateGallery) comicInfo.pageCount else null
+                    val newSimpleTags = if (updateGallery) comicInfo.toSimpleTags() else null
+                    val newArtists = if (updateArtist && comicInfo.penciller != null) {
+                        DownloadArtist.from(info.gid, comicInfo.penciller)
                     } else {
                         null
                     }
-
-                    val artistList = if (updateArtist && comicInfo.penciller != null) {
-                        info.artistInfoList = DownloadArtist.from(info.gid, comicInfo.penciller)
-                        info.gid to info.artistInfoList
-                    } else {
-                        null
-                    }
-
-                    if (galleryInfo != null || artistList != null) {
-                        galleryInfo to artistList
+                    if (newPages != null || newSimpleTags != null || newArtists != null) {
+                        LocalMetadataPatch(info, newPages, newSimpleTags, newArtists)
                     } else {
                         null
                     }
                 } else if (info.pages == 0) {
-                    val galleryInfo = find(SPIDER_INFO_FILENAME)?.let {
-                        readCompatFromPath(it)?.run {
-                            info.pages = pages
-                            info.galleryInfo
-                        }
-                    }
-
-                    galleryInfo?.let { it to null }
+                    val pages = find(SPIDER_INFO_FILENAME)?.let { readCompatFromPath(it)?.pages }
+                    pages?.let { LocalMetadataPatch(info, newPages = it, newSimpleTags = null, newArtists = null) }
                 } else {
                     null
                 }
             }
         }
+        if (patches.isEmpty()) return
 
-        val galleryInfoList = buildList {
-            list.forEach { (info, artists) ->
-                info?.let {
-                    add(it)
+        // 磁盘读取并发完成后，统一进入 commands 串行队列写回内存模型，避免与下载完成回调发生数据竞争。
+        val (galleryInfoList, artistUpdates) = commandResult {
+            val galleries = ArrayList<GalleryEntity>(patches.size)
+            val artists = ArrayList<Pair<Long, List<DownloadArtist>>>()
+            patches.forEach { patch ->
+                val info = patch.info
+                var galleryDirty = false
+                if (patch.newPages != null) {
+                    info.pages = patch.newPages
+                    galleryDirty = true
                 }
-                artists?.let { (gid, updateList) ->
-                    EhDB.putDownloadArtist(gid, updateList)
+                if (patch.newSimpleTags != null) {
+                    info.simpleTags = patch.newSimpleTags
+                    galleryDirty = true
+                }
+                if (patch.newArtists != null) {
+                    info.artistInfoList = patch.newArtists
+                    artists += info.gid to patch.newArtists
+                }
+                if (galleryDirty) {
+                    galleries += info.galleryInfo
                 }
             }
+            galleries to artists
+        }
+        artistUpdates.forEach { (gid, updateList) ->
+            EhDB.putDownloadArtist(gid, updateList)
         }
         if (galleryInfoList.isNotEmpty()) EhDB.updateGalleryInfo(galleryInfoList)
     }

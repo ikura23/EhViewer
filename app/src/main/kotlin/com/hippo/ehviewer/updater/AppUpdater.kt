@@ -18,13 +18,8 @@ import kotlin.time.Clock
 import kotlin.time.Duration.Companion.days
 import kotlin.time.Instant
 import kotlinx.io.asSource
-import moe.tarsin.coroutines.runSuspendCatching
 import okio.Path
-import tachiyomi.data.release.ArtifactsResponse
-import tachiyomi.data.release.CommitComparison
 import tachiyomi.data.release.Release
-import tachiyomi.data.release.Repository
-import tachiyomi.data.release.WorkflowRuns
 import tachiyomi.data.release.downloadLinkOrNull
 
 const val API_URL = "https://api.github.com/repos/${BuildConfig.REPO_NAME}"
@@ -37,37 +32,14 @@ object AppUpdater {
         val interval = Settings.updateIntervalDays.value
         if (forceCheck || interval != 0 && now > last + interval.days) {
             Settings.lastUpdateTime = now.epochSeconds
-            if (Settings.useCIUpdateChannel.value) {
-                val curSha = BuildConfig.COMMIT_SHA
-                val branch = statement(API_URL).executeAndParseAs<Repository>().defaultBranch
-                val run = statement("$API_URL/actions/runs?event=push&status=success&branch=$branch")
-                    .executeAndParseAs<WorkflowRuns>()
-                    .workflowRuns
-                    .firstOrNull() ?: return null
-                val shortSha = run.headSha.take(7)
-                if (shortSha != curSha) {
-                    val artifactsResp = statement("$API_URL/actions/runs/${run.id}/artifacts")
-                        .executeAndParseAs<ArtifactsResponse>()
-                    val archiveUrl = artifactsResp.artifacts.downloadLinkOrNull ?: return null
-                    val changelog = runSuspendCatching {
-                        val commitComparisonUrl = "$API_URL/compare/$curSha...$shortSha"
-                        val result = statement(commitComparisonUrl).executeAndParseAs<CommitComparison>()
-                        // TODO: Prettier format, Markdown?
-                        result.commits.joinToString("\n") { commit ->
-                            "${commit.commit.message.takeWhile { it != '\n' }} (@${commit.commit.author.name})"
-                        }
-                    }.getOrDefault(run.title)
-                    return EhRelease(shortSha, changelog, archiveUrl)
-                }
-            } else {
-                val curVersion = BuildConfig.RAW_VERSION_NAME
-                val release = statement(LATEST_RELEASE_URL).executeAndParseAs<Release>()
-                val latestVersion = release.version.trim()
-                val description = release.info
-                val downloadUrl = release.getDownloadLinkOrNull() ?: return null
-                if (isRemoteVersionNewer(latestVersion, curVersion)) {
-                    return EhRelease(latestVersion.removePrefix("v").removePrefix("V"), description, downloadUrl)
-                }
+            // 公开版统一使用 GitHub Releases 正式更新通道，避免拉取需鉴权的 Actions Artifact 死链。
+            val curVersion = BuildConfig.RAW_VERSION_NAME
+            val release = statement(LATEST_RELEASE_URL).executeAndParseAs<Release>()
+            val latestVersion = release.version.trim()
+            val description = release.info
+            val downloadUrl = release.getDownloadLinkOrNull() ?: return null
+            if (isRemoteVersionNewer(latestVersion, curVersion)) {
+                return EhRelease(latestVersion.removePrefix("v").removePrefix("V"), description, downloadUrl)
             }
         }
         return null

@@ -61,6 +61,46 @@ import okio.Path.Companion.toOkioPath
 import okio.Path.Companion.toPath
 
 /**
+ * 扫描任务代际门控：支持取消后立即重扫且不让晚到的旧任务清理逻辑误改新一代运行状态。
+ */
+internal class ScanRunGate {
+    private val lock = Any()
+    private var running = false
+    private var generation = 0L
+    private var activeJob: Job? = null
+    private var pendingCancelledJob: Job? = null
+
+    fun tryStart(launchBlock: (generation: Long, previousJob: Job?) -> Job): Boolean = synchronized(lock) {
+        if (running) return false
+        running = true
+        val gen = ++generation
+        val prev = pendingCancelledJob
+        pendingCancelledJob = null
+        activeJob = launchBlock(gen, prev)
+        true
+    }
+
+    fun cancel(): Job? = synchronized(lock) {
+        generation++
+        running = false
+        val job = activeJob
+        activeJob = null
+        if (job != null) {
+            pendingCancelledJob = job
+            job.cancel()
+        }
+        job
+    }
+
+    fun finish(generation: Long): Boolean = synchronized(lock) {
+        if (this.generation != generation) return false
+        running = false
+        activeJob = null
+        true
+    }
+}
+
+/**
  * 本地画廊与压缩包扫描导入器，支持免复制直接挂载设备磁盘上的既有画廊目录或 `.cbz`/`.zip` 压缩包。
  *
  * - 双通道扫描：即使未开启“所有文件访问权限”，也会自动通过 `downloadLocation`（兼容 SAF `content://` 与物理路径）
@@ -78,9 +118,8 @@ object LocalGalleryScanner {
             logcat(TAG, error)
         },
     )
-    private val stateLock = Any()
+    private val scanGate = ScanRunGate()
     private val failedMetadataCooldown = ConcurrentHashMap<Long, Long>()
-    private var activeScanJob: Job? = null
 
     enum class ScanStage {
         IDLE,
@@ -133,59 +172,55 @@ object LocalGalleryScanner {
         extraRoots: List<Path> = emptyList(),
         onlyConfiguredDownloadDir: Boolean = false,
         userInitiated: Boolean = false,
-    ): Boolean {
-        synchronized(stateLock) {
-            if (_scanProgress.value.running) return false
-            _scanProgress.update {
-                it.copy(
-                    running = true,
-                    stage = ScanStage.SCANNING,
-                    scanned = 0,
-                    total = 0,
-                    imported = 0,
-                    metadataUpdated = 0,
-                    lastRunUserInitiated = userInitiated,
+    ): Boolean = scanGate.tryStart { gen, previousJob ->
+        _scanProgress.update {
+            it.copy(
+                running = true,
+                stage = ScanStage.SCANNING,
+                scanned = 0,
+                total = 0,
+                imported = 0,
+                metadataUpdated = 0,
+                lastRunUserInitiated = userInitiated,
+            )
+        }
+        scanScope.launch {
+            var scanResult: Result? = null
+            var cancelled = false
+            try {
+                // 等待被取消的上一代扫描释放 scanMutex，再启动新一代扫描。
+                previousJob?.let { runSuspendCatching { it.join() } }
+                scanResult = scan(
+                    extraRoots = extraRoots,
+                    onlyConfiguredDownloadDir = onlyConfiguredDownloadDir,
                 )
-            }
-            val job = scanScope.launch {
-                var scanResult: Result? = null
-                var cancelled = false
-                try {
-                    scanResult = scan(
-                        extraRoots = extraRoots,
-                        onlyConfiguredDownloadDir = onlyConfiguredDownloadDir,
-                    )
-                } catch (e: CancellationException) {
-                    cancelled = true
-                    throw e
-                } catch (e: Throwable) {
-                    logcat(TAG, e)
-                } finally {
-                    synchronized(stateLock) {
-                        activeScanJob = null
-                        _scanProgress.update { prev ->
-                            prev.copy(
-                                running = false,
-                                stage = ScanStage.IDLE,
-                                completedEventId = if (cancelled) prev.completedEventId else prev.completedEventId + 1,
-                                lastResult = if (cancelled) null else scanResult,
-                            )
-                        }
+            } catch (e: CancellationException) {
+                cancelled = true
+                throw e
+            } catch (e: Throwable) {
+                logcat(TAG, e)
+            } finally {
+                if (scanGate.finish(gen)) {
+                    _scanProgress.update { prev ->
+                        prev.copy(
+                            running = false,
+                            stage = ScanStage.IDLE,
+                            completedEventId = if (cancelled) prev.completedEventId else prev.completedEventId + 1,
+                            lastResult = if (cancelled) null else scanResult,
+                        )
                     }
                 }
             }
-            activeScanJob = job
         }
-        return true
     }
 
     /**
      * 取消当前正在后台运行的本地画廊扫描任务。
      */
     fun cancelScan() {
-        synchronized(stateLock) {
-            activeScanJob?.cancel()
-            activeScanJob = null
+        scanGate.cancel()
+        _scanProgress.update { prev ->
+            if (!prev.running) prev else prev.copy(running = false, stage = ScanStage.IDLE)
         }
     }
 

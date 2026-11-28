@@ -106,12 +106,14 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.onCompletion
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.sample
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import moe.tarsin.string
 import okio.Path.Companion.toPath
@@ -266,36 +268,11 @@ fun ReaderScreen(pageLoader: PageLoader, info: BaseGalleryInfo?, isLocalDownload
         // 小窗口增量抽样，避免给普通静态画廊强拉过多页或在超时后破坏阅读缓存。
         val sampleStart = (pageLoader.startPage - 1).coerceAtLeast(0)
         val sampleEnd = (pageLoader.startPage + 5).coerceAtMost(size - 1)
-        val sampleTotal = (sampleEnd - sampleStart + 1).coerceAtLeast(1)
-        val observedAnimated = HashMap<Int, Boolean>(sampleTotal)
-        var requested = false
-        var waited = 0L
-        while (isActive && waited < 15_000L) {
-            if (!requested) {
-                pageLoader.requestRange(sampleStart, sampleEnd)
-                requested = true
-            }
-            for (i in sampleStart..sampleEnd) {
-                if (i in observedAnimated) continue
-                when (val status = pageLoader.pages[i].status) {
-                    is PageStatus.Ready -> observedAnimated[i] = status.image.isAnimated
-                    is PageStatus.Error, is PageStatus.Blocked -> observedAnimated[i] = false
-                    else -> Unit
-                }
-            }
-            val animCount = observedAnimated.values.count { it }
-            val nonAnimCount = observedAnimated.size - animCount
-            // 非动图已超过半数，立刻结束抽样，不干扰普通画廊阅读。
-            if (nonAnimCount * 2 > sampleTotal) break
-            // 已确认动图过半且抽样过半，激活自动动图播放。
-            if (observedAnimated.size >= minOf(sampleTotal, 4) && animCount * 2 >= observedAnimated.size) {
-                pageLoader.extraPrefetchCount = animatedPreloadWindow
-                AnimatedPlaybackSession.autoActive = true
-                return@LaunchedEffect
-            }
-            if (observedAnimated.size >= sampleTotal) break
-            delay(200)
-            waited += 200
+        pageLoader.requestRange(sampleStart, sampleEnd)
+        if (sampleAnimatedPages(pageLoader.pages, sampleStart..sampleEnd, 15_000L)) {
+            pageLoader.extraPrefetchCount = animatedPreloadWindow
+            AnimatedPlaybackSession.autoActive = true
+            return@LaunchedEffect
         }
         AnimatedPlaybackSession.autoActive = false
     }
@@ -317,22 +294,23 @@ fun ReaderScreen(pageLoader: PageLoader, info: BaseGalleryInfo?, isLocalDownload
         val actualTarget = (end - start + 1).coerceAtLeast(1)
         animatedLoadTarget = actualTarget
         pageLoader.requestRange(start, end)
-        var waited = 0L
-        while (isActive && waited < 20_000L) {
-            val done = (start..end).count {
-                when (pageLoader.pages[it].status) {
-                    is PageStatus.Ready, is PageStatus.Error, is PageStatus.Blocked -> true
-                    else -> false
-                }
-            }
-            loadedAnimatedCount = done.coerceAtMost(actualTarget)
-            if (done >= actualTarget && AnimatedPlaybackSession.playbackStarted) {
-                return@LaunchedEffect
-            }
-            delay(200)
-            waited += 200
+        val completed = withTimeoutOrNull(20_000L) {
+            val statusMerged = (start..end)
+                .map { idx -> pageLoader.pages[idx].statusFlow }
+                .merge()
+                .onStart { emit(PageStatus.Queued) }
+            combine(
+                statusMerged,
+                snapshotFlow { AnimatedPlaybackSession.playbackStarted },
+            ) { _, started ->
+                val done = (start..end).count { pageLoader.pages[it].status.isTerminal() }
+                loadedAnimatedCount = done.coerceAtMost(actualTarget)
+                done >= actualTarget && started
+            }.first { it }
+        } == true
+        if (!completed) {
+            animatedLoadingDialogVisible = false
         }
-        animatedLoadingDialogVisible = false
     }
     val volumeKeysEnabled by Settings.readWithVolumeKeys.collectAsState()
     val volumeKeysInverted by Settings.readWithVolumeKeysInverted.collectAsState()

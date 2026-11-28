@@ -5,6 +5,9 @@ import com.ehviewer.core.database.model.DownloadInfo
 import com.ehviewer.core.database.model.GalleryEntity
 import com.hippo.ehviewer.coil.resolveGalleryThumbCacheKey
 import java.io.ByteArrayInputStream
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -325,5 +328,48 @@ class LocalGalleryScannerTest {
                 hasValidRemoteIdentity = true,
             ),
         )
+    }
+
+    @Test
+    fun scanRunGateAllowsImmediateRestartAfterCancelAndIgnoresStaleFinish() = runBlocking {
+        val gate = ScanRunGate()
+        val job1 = Job()
+        var gen1 = -1L
+        var gen2 = -1L
+        var seenPrevJob: Job? = null
+
+        assertTrue(
+            gate.tryStart { gen, prev ->
+                gen1 = gen
+                assertNull(prev)
+                job1
+            },
+        )
+        assertFalse(gate.tryStart { _, _ -> Job() })
+
+        val cancelled = gate.cancel()
+        assertEquals(job1, cancelled)
+        assertTrue(job1.isCancelled)
+
+        val job2 = CompletableDeferred<Unit>()
+        assertTrue(
+            gate.tryStart { gen, prev ->
+                gen2 = gen
+                seenPrevJob = prev
+                job2
+            },
+        )
+        assertEquals(job1, seenPrevJob)
+        assertNotEquals(gen1, gen2)
+
+        // 旧任务晚到清理不能误清新一代的运行状态
+        assertFalse(gate.finish(gen1))
+        assertFalse(gate.tryStart { _, _ -> Job() })
+
+        assertTrue(gate.finish(gen2))
+        assertTrue(gate.tryStart { _, prev ->
+            assertNull(prev)
+            Job()
+        })
     }
 }
