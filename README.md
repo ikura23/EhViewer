@@ -1,10 +1,10 @@
 源自FooIbar，用vibe coding优化并发布，欢迎提issues https://github.com/FooIbar/EhViewer
 
 <p align="right">
-  <strong>English</strong>
+  <strong>简体中文</strong>
   <span> | </span>
-  <a href="/docs/README/zh-cn.md">
-  简体中文
+  <a href="/docs/README/en.md">
+  English
   </a>
   <span> | </span>
   <a href="/docs/README/zh-tw.md">
@@ -38,53 +38,62 @@
 
 <div align="center">
   <h3>
-    <a href="#description">
-    Description
+    <a href="#描述">
+    描述
     </a>
     <span> | </span>
-    <a href="#download">
-    Download
+    <a href="#下载">
+    下载
     </a>
     <span> | </span>
-    <a href="#screenshot">
-    Screenshot
+    <a href="#截图">
+    截图
     </a>
     <span> | </span>
-    <a href="#thanks">
-    Thanks
+    <a href="#感谢">
+    感谢
     </a>
     <span> | </span>
-    <a href="#license">
-    License
+    <a href="#许可证">
+    许可证
     </a>
   </h3>
 </div>
 
-# Description
+# 描述
 
-A modern EhViewer fork dedicated to high-performance
+基于 FooIbar/EhViewer 优化的现代 Android 客户端，适配 Material Design 3 动态取色。
 
-with [Material Design 3](https://m3.material.io/)
-and [Dynamic Color](https://m3.material.io/styles/color/dynamic-color/overview) Support
+- **实验性新版界面**：5 Tab 底部导航、热门/排行/订阅滑动切换、高星标签推荐墙与全局 Non-H 模式。
+- **动图与画质增强**：Rust + AHB 零拷贝 WebP 动图倍速播放、护眼滤镜预设与 GPU 实时画质增强（Android 13+）。
+- **本地书库管理**：本地画廊扫描、同名新旧版本自动检测合并与下载页随机阅读。
 
-# Download
+# 下载
 
-| Flavor  | Minimum Android Version | Notes                          |
-|---------|-------------------------|--------------------------------|
-| Default | 8.0                     | Full support                   |
+- **包名**：`com.ys.ehviewer`（独立签名，可与原版共存）
+- **最低系统**：Android 8.0+（GPU 画质增强需 Android 13+）
+
+| 架构 | 说明 |
+|------|------|
+| `arm64-v8a` | 推荐，绝大多数现代手机 |
+| `armeabi-v7a` / `x86_64` / `universal` | 旧设备 / 模拟器 / 通用包 |
 
 <a href="https://github.com/ikura23/EhViewer/releases">
 <img alt="Get it on GitHub" src="https://github.com/FooIbar/EhViewer-art/blob/master/get-it-on-github.svg" width="200px"/>
 </a>
 
-# Screenshot
+# 截图
 
-![screenshots-01](https://github.com/FooIbar/EhViewer-art/blob/master/screenshots-01.webp)
-![screenshots-02](https://github.com/FooIbar/EhViewer-art/blob/master/screenshots-02.webp)
+<p align="center">
+  <img src="docs/assets/showcase-01-hot.png" width="23%" alt="热门与排行" />
+  <img src="docs/assets/showcase-02-search.png" width="23%" alt="推荐标签画幅墙" />
+  <img src="docs/assets/showcase-03-downloads.png" width="23%" alt="本地下载管理" />
+  <img src="docs/assets/showcase-04-me.png" width="23%" alt="我的个人中心" />
+</p>
 
-# Thanks
+# 感谢
 
-Here is the libraries
+本项目受到了诸多开源项目的帮助
 
 - [Arrow](https://arrow-kt.io/)
 - [AOSP & AndroidX](https://source.android.com/)
@@ -95,7 +104,7 @@ Here is the libraries
 - [Compose Destinations](https://composedestinations.rafaelcosta.xyz/)
 - [libarchive](https://www.libarchive.org/)
 
-# License
+# 许可证
 
     Copyright 2014-2019 Hippo Seven
     Copyright 2020-2022 NekoInverter

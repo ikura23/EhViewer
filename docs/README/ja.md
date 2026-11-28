@@ -1,10 +1,12 @@
+源自FooIbar，用vibe coding最適化・公開（Issues歓迎: https://github.com/FooIbar/EhViewer ）
+
 <p align="right">
   <a href="/README.md">
-  English
+  简体中文
   </a>
   <span> | </span>
-  <a href="/docs/README/zh-cn.md">
-  简体中文
+  <a href="/docs/README/en.md">
+  English
   </a>
   <span> | </span>
   <a href="/docs/README/zh-tw.md">
@@ -12,7 +14,6 @@
   </a>
   <span> | </span>
   <strong>日本語</strong>
-  </a>
 </p>
 
 <h1 align="center">
@@ -61,16 +62,21 @@
 
 # 説明
 
-軽量で高性能な EhViewer のフォークです。
+FooIbar/EhViewer をベースに最適化した Material Design 3（ダイナミックカラー）対応のモダン Android クライアントです。
 
-[Material Design 3](https://m3.material.io/)
-と[ダイナミックカラー](https://m3.material.io/styles/color/dynamic-color/overview)のサポートを搭載しています。
+- **実験的新版 UI**：5 タブ下部ナビゲーション、人気／ランキング／購読のスワイプ切替、おすすめタグウォール、グローバル Non-H モード。
+- **WebP アニメーション＆画質強化**：Rust + AHB ゼロコピー倍速再生、アイケアフィルター、GPU リアルタイム画質強化（Android 13+）。
+- **ローカルライブラリ管理**：ローカルスキャン、新旧重複ギャラリーの自動検出・統合、ランダム閲覧。
 
 # ダウンロード
 
-| フレーバー   | 最小の Android バージョン | 注意事項              |
-|---------|-------------------|-------------------|
-| Default | 8.0               | 完全なサポート           |
+- **パッケージ名**：`com.ys.ehviewer`（独自署名のためオリジナル版と共存可能）
+- **対応 OS**：Android 8.0+（GPU 画質強化は Android 13+）
+
+| ABI | 備考 |
+|-----|------|
+| `arm64-v8a` | 推奨（多くの最新端末） |
+| `armeabi-v7a` / `x86_64` / `universal` | 旧端末 / エミュレータ / ユニバーサル版 |
 
 <a href="https://github.com/ikura23/EhViewer/releases">
 <img alt="Get it on GitHub" src="https://github.com/FooIbar/EhViewer-art/blob/master/get-it-on-github.svg" width="200px"/>
@@ -78,8 +84,12 @@
 
 # スクリーンショット
 
-![screenshots-01](https://github.com/FooIbar/EhViewer-art/blob/master/screenshots-01.webp)
-![screenshots-02](https://github.com/FooIbar/EhViewer-art/blob/master/screenshots-02.webp)
+<p align="center">
+  <img src="../assets/showcase-01-hot.png" width="23%" alt="人気・ランキング" />
+  <img src="../assets/showcase-02-search.png" width="23%" alt="おすすめタグ検索" />
+  <img src="../assets/showcase-03-downloads.png" width="23%" alt="ダウンロード管理" />
+  <img src="../assets/showcase-04-me.png" width="23%" alt="マイページ" />
+</p>
 
 # 感謝
 

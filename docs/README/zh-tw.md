@@ -1,10 +1,12 @@
+源自FooIbar，用vibe coding優化並發布，歡迎提issues https://github.com/FooIbar/EhViewer
+
 <p align="right">
   <a href="/README.md">
-  English
+  简体中文
   </a>
   <span> | </span>
-  <a href="/docs/README/zh-cn.md">
-  简体中文
+  <a href="/docs/README/en.md">
+  English
   </a>
   <span> | </span>
   <strong>正體中文</strong>
@@ -60,15 +62,21 @@
 
 # 說明
 
-致力於輕量化與良好性能表現的 EhViewer 分支
+基於 FooIbar/EhViewer 優化的現代 Android 客戶端，適配 Material Design 3 動態取色。
 
-已針對性適配 Material Design 3 及其動態取色系統
+- **實驗性新版介面**：5 Tab 底部導覽、熱門/排行/訂閱滑動切換、高星標籤推薦牆與全域 Non-H 模式。
+- **動圖與畫質增強**：Rust + AHB 零拷貝 WebP 動圖倍速播放、護眼濾鏡預設與 GPU 即時畫質增強（Android 13+）。
+- **本地書庫管理**：本地畫廊掃描、同名新舊版本自動偵測合併與下載頁隨機閱讀。
 
 # 下載
 
-| 變種      | 最低 Android 版本 | 備註       |
-|---------|---------------|----------|
-| Default | 8.0           | 完全支援     |
+- **套件名稱**：`com.ys.ehviewer`（獨立簽名，可與原版共存）
+- **最低系統**：Android 8.0+（GPU 畫質增強需 Android 13+）
+
+| 架構 | 說明 |
+|------|------|
+| `arm64-v8a` | 推薦，絕大多數現代手機 |
+| `armeabi-v7a` / `x86_64` / `universal` | 舊裝置 / 模擬器 / 通用套件 |
 
 <a href="https://github.com/ikura23/EhViewer/releases">
 <img alt="Get it on GitHub" src="https://github.com/FooIbar/EhViewer-art/blob/master/get-it-on-github.svg" width="200px"/>
@@ -76,8 +84,12 @@
 
 # 截圖
 
-![screenshots-01](https://github.com/FooIbar/EhViewer-art/blob/master/screenshots-01.webp)
-![screenshots-02](https://github.com/FooIbar/EhViewer-art/blob/master/screenshots-02.webp)
+<p align="center">
+  <img src="../assets/showcase-01-hot.png" width="23%" alt="熱門與排行" />
+  <img src="../assets/showcase-02-search.png" width="23%" alt="推薦標籤畫幅牆" />
+  <img src="../assets/showcase-03-downloads.png" width="23%" alt="本地下載管理" />
+  <img src="../assets/showcase-04-me.png" width="23%" alt="我的個人中心" />
+</p>
 
 # 感謝
 
