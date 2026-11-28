@@ -1,5 +1,6 @@
 package com.hippo.ehviewer.download
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
@@ -119,6 +120,40 @@ class DownloadRecoveryTest {
             val active = resumed.toMutableSet()
             owner.post { active.remove(2) }
             assertEquals(emptySet<Long>(), owner.execute { active.toSet() })
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun commandsCancelPropagatesWithoutCallingReportFailureAndCancelsEnqueue() = runBlocking {
+        val scope = CoroutineScope(coroutineContext + Job())
+        val reported = mutableListOf<Throwable>()
+        try {
+            val owner = DownloadCommands(scope) { reported += it }
+            owner.post { throw CancellationException("post cancelled") }
+            val deferred = owner.enqueue<String> { throw CancellationException("enqueue cancelled") }
+            deferred.join()
+            assertTrue(deferred.isCancelled)
+            assertEquals("ok", owner.execute { "ok" })
+            assertTrue(reported.isEmpty())
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun commandsNormalFailureReportsAndContinuesProcessing() = runBlocking {
+        val scope = CoroutineScope(coroutineContext + Job())
+        val reported = mutableListOf<Throwable>()
+        try {
+            val owner = DownloadCommands(scope) { reported += it }
+            owner.post { throw IllegalStateException("post boom") }
+            val failed = runCatching { owner.execute<String> { error("exec boom") } }
+            assertTrue(failed.isFailure)
+            assertEquals("still-alive", owner.execute { "still-alive" })
+            assertEquals(1, reported.size)
+            assertTrue(reported[0] is IllegalStateException)
         } finally {
             scope.cancel()
         }

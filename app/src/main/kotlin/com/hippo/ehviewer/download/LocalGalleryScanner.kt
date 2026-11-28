@@ -409,7 +409,7 @@ object LocalGalleryScanner {
 
         // 标准扫描结束后，清理历史上误导入的非画廊软件/浏览器条目及与目录重复的压缩包条目（绝不删磁盘原文件）。
         if (extraRoots.isEmpty()) {
-            runCatching {
+            runSuspendCatching {
                 cleanupStaleOrDuplicateLocalEntries(
                     storageRoot = storage.toString(),
                     appDownloadRoots = appDownloadRoots,
@@ -445,7 +445,7 @@ object LocalGalleryScanner {
         val existingIsDir = existing.downloadDir?.let { runCatching { it.isDirectory }.getOrDefault(false) } == true
         if (existingIsDir) return true
         if (existing.state == DownloadInfo.STATE_FINISH && target.isInsideAppDownloadDir) {
-            runCatching {
+            runSuspendCatching {
                 DownloadManager.normalizeAppDownloadEntry(
                     gid = gid,
                     dirname = target.dirname,
@@ -621,7 +621,7 @@ object LocalGalleryScanner {
             if (isArchive) {
                 runCatching { ensureArchiveThumb(path, item.gid) }
             }
-            runCatching {
+            runSuspendCatching {
                 if (target.isInsideAppDownloadDir) {
                     DownloadManager.normalizeAppDownloadEntry(
                         gid = item.gid,
@@ -641,14 +641,14 @@ object LocalGalleryScanner {
                 }
             }
             if (!isArchive && readUpgradeReplaceMarker(path) != null) {
-                runCatching { DownloadManager.completePendingUpgradeReplacementIfFinished(item.gid) }
+                runSuspendCatching { DownloadManager.completePendingUpgradeReplacementIfFinished(item.gid) }
             }
             return false
         }
         if (isArchive) {
             runCatching { ensureArchiveThumb(path, item.gid) }
         }
-        val imported = runCatching {
+        val imported = runSuspendCatching {
             DownloadManager.importLocalDownload(
                 galleryInfo = item.info,
                 absolutePath = target.dirname,
@@ -659,7 +659,7 @@ object LocalGalleryScanner {
             )
         }.getOrDefault(false)
         if (imported && resolvedState == DownloadInfo.STATE_FINISH && !isArchive && readUpgradeReplaceMarker(path) != null) {
-            runCatching { DownloadManager.completePendingUpgradeReplacementIfFinished(item.gid) }
+            runSuspendCatching { DownloadManager.completePendingUpgradeReplacementIfFinished(item.gid) }
         }
         return imported
     }
@@ -898,7 +898,9 @@ object LocalGalleryScanner {
                 for (entry in sortedEntries) {
                     if (entry.size > MAX_THUMB_SOURCE_BYTES) continue
                     val entryExtension = entry.name.substringAfterLast('.', "").lowercase()
-                    val bytes = runCatching { zip.getInputStream(entry).use { it.readBytes() } }.getOrNull() ?: continue
+                    val bytes = runCatching {
+                        zip.getInputStream(entry).use { readStreamBytesLimited(it, MAX_THUMB_SOURCE_BYTES) }
+                    }.getOrNull() ?: continue
                     if (saveArchiveEntryThumbBytes(bytes, entryExtension, gid, cachePrefix)) return
                 }
             }

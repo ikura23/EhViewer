@@ -83,6 +83,7 @@ import com.hippo.ehviewer.EhDB
 import com.hippo.ehviewer.client.EhUtils
 import com.hippo.ehviewer.download.DownloadManager
 import com.hippo.ehviewer.download.LocalGalleryScanner
+import com.hippo.ehviewer.download.readStreamBytesLimited
 import com.hippo.ehviewer.download.archiveThumbPath
 import com.hippo.ehviewer.download.downloadDir
 import com.hippo.ehviewer.download.isAnimatedImageFile
@@ -625,7 +626,9 @@ private fun createArchiveThumb(archive: File, gid: Long, cachePrefix: String): F
             for (entry in sortedEntries) {
                 if (entry.size > 32L * 1024 * 1024) continue
                 val ext = entry.name.substringAfterLast('.', "").lowercase()
-                val bytes = runCatching { zip.getInputStream(entry).use { it.readBytes() } }.getOrNull() ?: continue
+                val bytes = runCatching {
+                    zip.getInputStream(entry).use { readStreamBytesLimited(it, 32L * 1024 * 1024) }
+                }.getOrNull() ?: continue
                 if (ext == "gif" || isAnimatedImageHeader(bytes)) {
                     val outExt = if (ext == "webp" || ext == "gif") ext else "gif"
                     val animOut = File(AppConfig.localThumbDir.toString(), "$cachePrefix.$outExt")

@@ -57,6 +57,7 @@ import io.ktor.client.statement.request
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
 import kotlin.concurrent.write
+import kotlinx.coroutines.CancellationException
 import okio.Path
 import okio.Path.Companion.toOkioPath
 import okio.Path.Companion.toPath
@@ -334,7 +335,7 @@ class SpiderDen(val info: GalleryInfo) {
     suspend fun archive() = saveAsCbz && downloadDir?.run {
         val finalFile = resolve(archiveName)
         val tempFile = resolve("$archiveName.tmp")
-        runCatching {
+        try {
             tempFile.delete()
             archiveTo(tempFile)
             val tempSize = tempFile.metadataOrNull()?.size
@@ -350,10 +351,15 @@ class SpiderDen(val info: GalleryInfo) {
                 check(finalSize == tempSize) { "Archive size mismatch: $finalSize != $tempSize" }
             }
             tempFile.delete()
-        }.onFailure {
+            false
+        } catch (ce: CancellationException) {
             runCatching { tempFile.delete() }
-            logcat(it)
-        }.isFailure
+            throw ce
+        } catch (t: Throwable) {
+            runCatching { tempFile.delete() }
+            logcat(t)
+            true
+        }
     } == true
 
     // Postpone this to `SpiderQueen.stop` because files may still be in use by reader

@@ -162,7 +162,7 @@ object EhTagDatabase : CoroutineScope {
         }
         var lastError: Throwable? = null
         for (url in candidates) {
-            val result = runCatching { fetch(url) }
+            val result = runSuspendCatching { fetch(url) }
             if (result.isSuccess) return result.getOrThrow()
             lastError = result.exceptionOrNull()
         }

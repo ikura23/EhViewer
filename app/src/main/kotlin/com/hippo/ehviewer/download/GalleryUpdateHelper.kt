@@ -33,8 +33,10 @@ import com.hippo.ehviewer.util.displayString
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.ZipInputStream
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -121,6 +123,7 @@ object GalleryUpdateTracker {
             var prepResult: IncrementalPrepareResult? = null
             var errorMsg: String? = null
             var registeredNewGid: Long? = null
+            var registeredNewDir: Path? = null
             try {
                 val targetInfo = preloadedTargetInfo ?: EhEngine.getGalleryDetail(
                     EhUrl.getGalleryDetailUrl(targetGid, targetToken),
@@ -141,9 +144,11 @@ object GalleryUpdateTracker {
                 }
                 prepResult = prep
                 if (replaceOld) {
+                    val targetDir = getGalleryDownloadDir(targetInfo)
                     DownloadManager.registerUpgradeReplacement(targetInfo.gid, oldInfo.gid)
-                    writeUpgradeReplaceMarker(getGalleryDownloadDir(targetInfo), oldInfo.gid)
+                    writeUpgradeReplaceMarker(targetDir, oldInfo.gid)
                     registeredNewGid = targetInfo.gid
+                    registeredNewDir = targetDir
                 } else {
                     DownloadManager.clearUpgradeReplacement(targetInfo.gid)
                     deleteUpgradeReplaceMarker(getGalleryDownloadDir(targetInfo))
@@ -163,11 +168,16 @@ object GalleryUpdateTracker {
                     }
                 }
             } catch (e: Throwable) {
-                logcat(TAG, e)
                 registeredNewGid?.let { gid ->
-                    runSuspendCatching { DownloadManager.clearUpgradeReplacement(gid) }
-                    runCatching { deleteUpgradeReplaceMarker(getGalleryDownloadDir(BaseGalleryInfo(gid, ""))) }
+                    withContext(NonCancellable) {
+                        runSuspendCatching { DownloadManager.clearUpgradeReplacement(gid) }
+                        registeredNewDir?.let { dir ->
+                            runCatching { deleteUpgradeReplaceMarker(dir) }
+                        }
+                    }
                 }
+                if (e is CancellationException) throw e
+                logcat(TAG, e)
                 errorMsg = e.displayString()
             } finally {
                 synchronized(stateLock) {

@@ -67,6 +67,7 @@ import com.ramcosta.composedestinations.annotation.RootGraph
 import com.ramcosta.composedestinations.navigation.DestinationsNavigator
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collectLatest
+import moe.tarsin.coroutines.runSuspendCatching
 import moe.tarsin.snackbar
 import splitties.systemservices.clipboardManager
 
@@ -164,7 +165,7 @@ fun AnimatedVisibilityScope.CookieSignInScreen(navigator: DestinationsNavigator)
         isProgressIndicatorVisible = true
 
         signInJob = launchIO {
-            runCatching {
+            runSuspendCatching {
                 EhUtils.signOut()
                 EhCookieStore.setIdentityCookies(
                     ipbMemberId = cleanMemberId,

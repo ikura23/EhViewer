@@ -148,6 +148,16 @@ fun AnimatedPreviewImage(
                 return
             }
             val drawable = ((painterState as? AsyncImagePainter.State.Success)?.result?.image as? DrawableImage)?.drawable
+            // 仅当预览是独立禁用缓存的动图实例时在销毁/换图时关闭原生资源，切换倍速时保持存活。
+            DisposableEffect(drawable, state.isAnimated) {
+                onDispose {
+                    if (state.isAnimated) {
+                        (drawable as? Animatable)?.stop()
+                        drawable?.setVisible(false, false)
+                        (drawable as? AutoCloseable)?.close()
+                    }
+                }
+            }
             DisposableEffect(drawable, speed) {
                 when (drawable) {
                     is AnimatedWebPDrawable -> {

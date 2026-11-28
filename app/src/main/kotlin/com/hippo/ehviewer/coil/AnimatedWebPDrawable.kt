@@ -204,6 +204,7 @@ class AnimatedWebPDrawable(
     private val decodeHeight: Int
 
     private val nativeLock = Any()
+    private val renderLock = Any()
     private val stateLock = Any()
     private val closed = AtomicBoolean(false)
 
@@ -298,9 +299,12 @@ class AnimatedWebPDrawable(
     }
 
     override fun draw(canvas: Canvas) {
-        val frame = currentRenderFrame
-        if (closed.get() || frame.bitmap.isRecycled) return
-        canvas.drawBitmap(frame.bitmap, null, bounds, paint)
+        if (closed.get()) return
+        synchronized(renderLock) {
+            val frame = currentRenderFrame
+            if (closed.get() || frame.bitmap.isRecycled) return
+            canvas.drawBitmap(frame.bitmap, null, bounds, paint)
+        }
     }
 
     override fun setAlpha(alpha: Int) {
@@ -574,7 +578,9 @@ class AnimatedWebPDrawable(
                 nativeDestroyDecoder(decoderPtr)
                 decoderPtr = 0L
             }
-            slots.forEach { it.frame.close() }
+            synchronized(renderLock) {
+                slots.forEach { it.frame.close() }
+            }
         }
     }
 

@@ -111,4 +111,22 @@ class GalleryUpdateHelperTest {
             tempDir.deleteRecursively()
         }
     }
+
+    @Test
+    fun deletingMarkerInDifferentDirectoryPreservesTargetMarker() {
+        val rootDir = Files.createTempDirectory("ehviewer_upgrade_marker_iso").toFile()
+        try {
+            val targetDir = rootDir.resolve("12345-RealTitle").apply { mkdirs() }.toOkioPath()
+            val wrongDir = rootDir.resolve("12345-").apply { mkdirs() }.toOkioPath()
+
+            writeUpgradeReplaceMarker(targetDir, 999L)
+            deleteUpgradeReplaceMarker(wrongDir)
+            assertEquals(999L, readUpgradeReplaceMarker(targetDir))
+
+            deleteUpgradeReplaceMarker(targetDir)
+            assertNull(readUpgradeReplaceMarker(targetDir))
+        } finally {
+            rootDir.deleteRecursively()
+        }
+    }
 }
