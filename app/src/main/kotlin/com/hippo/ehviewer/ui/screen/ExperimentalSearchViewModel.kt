@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import coil3.imageLoader
 import coil3.request.ImageRequest
+import com.hippo.ehviewer.Settings
 import com.hippo.ehviewer.client.EhTagDatabase
 import com.hippo.ehviewer.coil.ehUrl
 import com.hippo.ehviewer.ui.experimental.ExperimentalRecommendationCache
@@ -11,6 +12,7 @@ import com.hippo.ehviewer.ui.experimental.RecommendTabMode
 import com.hippo.ehviewer.ui.experimental.RecommendedTagItem
 import com.hippo.ehviewer.ui.experimental.extractRecommendedTags
 import com.hippo.ehviewer.ui.experimental.fetchHighRatedGalleryBatch
+import com.hippo.ehviewer.ui.experimental.refreshRecommendedTagTitles
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -81,13 +83,29 @@ class ExperimentalSearchViewModel : ViewModel() {
     private val sessions = RecommendTabMode.entries.associateWith { TabCursorSession() }
     private val activeJobs = HashMap<RecommendTabMode, Job>()
 
+    private fun translateRecommendedTag(nsPrefix: String?, rawTag: String): String? {
+        val canTranslate = Settings.showTagTranslations.value &&
+            with(appCtx) { EhTagDatabase.translatable } &&
+            EhTagDatabase.initialized
+        return if (canTranslate) {
+            EhTagDatabase.getTranslation(nsPrefix, rawTag)
+        } else {
+            null
+        }
+    }
+
     fun uiStateFlow(tabMode: RecommendTabMode): StateFlow<TabRecommendUiState> =
         stateFlows.getValue(tabMode).asStateFlow()
 
     fun ensureLoaded(tabMode: RecommendTabMode, nonHMode: Boolean, site: Int) {
         val session = sessions.getValue(tabMode)
         val modeChanged = session.nonHMode != nonHMode || session.site != site
-        if (session.initialized && !modeChanged && stateFlows.getValue(tabMode).value.items.isNotEmpty()) {
+        val currentItems = stateFlows.getValue(tabMode).value.items
+        if (session.initialized && !modeChanged && currentItems.isNotEmpty()) {
+            val updatedItems = refreshRecommendedTagTitles(currentItems, ::translateRecommendedTag)
+            if (updatedItems !== currentItems) {
+                stateFlows.getValue(tabMode).update { it.copy(items = updatedItems) }
+            }
             return
         }
         if (modeChanged) {
@@ -105,10 +123,11 @@ class ExperimentalSearchViewModel : ViewModel() {
         session.initialized = true
         activeJobs[tabMode]?.cancel()
         activeJobs[tabMode] = viewModelScope.launch {
-            // 先读轻量磁盘缓存，命中即秒出；如果缓存已过期再后台静默拉取最新高星批次
+            // 先读轻量磁盘缓存并动态补译中文，命中即秒出；如果缓存已过期再后台静默拉取最新高星批次
             val cached = ExperimentalRecommendationCache.load(appCtx, site, nonHMode, tabMode)
             if (cached != null) {
-                val (cachedItems, isFresh) = cached
+                val (rawCachedItems, isFresh) = cached
+                val cachedItems = refreshRecommendedTagTitles(rawCachedItems, ::translateRecommendedTag)
                 cachedItems.forEach { item ->
                     if (item.tagKey !in session.seenTagKeys) session.seenTagKeys.addLast(item.tagKey)
                     session.usedCoverGids.add(item.coverGallery.gid)
@@ -222,13 +241,7 @@ class ExperimentalSearchViewModel : ViewModel() {
                     usedCoverGids = session.usedCoverGids,
                     usedCoverThumbKeys = session.usedCoverThumbKeys,
                     maxItems = needCount,
-                    translateTag = { nsPrefix, rawTag ->
-                        if (EhTagDatabase.initialized) {
-                            EhTagDatabase.getTranslation(nsPrefix, rawTag)
-                        } else {
-                            null
-                        }
-                    },
+                    translateTag = ::translateRecommendedTag,
                 )
                 collectedItems.addAll(extracted.items)
                 excludeSet.addAll(extracted.addedTagKeys)
@@ -271,9 +284,7 @@ class ExperimentalSearchViewModel : ViewModel() {
                     usedCoverGids = emptySet(),
                     usedCoverThumbKeys = emptySet(),
                     maxItems = batchSizeTarget,
-                    translateTag = { nsPrefix, rawTag ->
-                        if (EhTagDatabase.initialized) EhTagDatabase.getTranslation(nsPrefix, rawTag) else null
-                    },
+                    translateTag = ::translateRecommendedTag,
                 )
                 collectedItems.addAll(fallback.items)
                 fallback.addedTagKeys.forEach { session.seenTagKeys.addLast(it) }

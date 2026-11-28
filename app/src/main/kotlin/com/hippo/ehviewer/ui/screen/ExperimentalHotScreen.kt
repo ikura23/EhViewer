@@ -16,6 +16,8 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
 import androidx.compose.material.icons.automirrored.filled.ViewList
@@ -23,6 +25,7 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FolderSpecial
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Whatshot
+import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -33,10 +36,7 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,9 +55,11 @@ import com.hippo.ehviewer.client.data.ListUrlBuilder
 import com.hippo.ehviewer.client.data.ListUrlBuilder.Companion.MODE_SUBSCRIPTION
 import com.hippo.ehviewer.client.data.ListUrlBuilder.Companion.MODE_TOPLIST
 import com.hippo.ehviewer.client.data.ListUrlBuilder.Companion.MODE_WHATS_HOT
+import com.hippo.ehviewer.client.exception.NoHitsFoundException
 import com.hippo.ehviewer.collectAsState
 import com.hippo.ehviewer.ui.Screen
 import com.hippo.ehviewer.ui.destinations.FavouritesScreenDestination
+import com.hippo.ehviewer.ui.destinations.MyTagsScreenDestination
 import com.hippo.ehviewer.ui.doGalleryInfoAction
 import com.hippo.ehviewer.ui.main.AvatarIcon
 import com.hippo.ehviewer.ui.main.GalleryInfoGridItem
@@ -77,7 +79,7 @@ import moe.tarsin.navigate
 fun AnimatedVisibilityScope.ExperimentalHotScreen(
     navigator: DestinationsNavigator,
 ) = Screen(navigator) {
-    var hotTab by rememberSaveable { mutableIntStateOf(0) }
+    val pagerState = rememberPagerState(initialPage = 0, pageCount = { 3 })
     var listMode by Settings.listMode.asMutableState()
     val showPages by Settings.showGalleryPages.collectAsState()
     val showProgress by Settings.showReadingProgress.collectAsState()
@@ -132,8 +134,8 @@ fun AnimatedVisibilityScope.ExperimentalHotScreen(
         ) {
             segs.forEachIndexed { idx, (tabId, labelRes, icon) ->
                 SegmentedButton(
-                    selected = hotTab == tabId,
-                    onClick = { hotTab = tabId },
+                    selected = pagerState.targetPage == tabId,
+                    onClick = { launch { pagerState.animateScrollToPage(tabId) } },
                     shape = SegmentedButtonDefaults.itemShape(index = idx, count = segs.size),
                     icon = { Icon(imageVector = icon, contentDescription = null, modifier = Modifier.size(16.dp)) },
                     label = { Text(text = stringResource(labelRes), maxLines = 1) },
@@ -141,10 +143,17 @@ fun AnimatedVisibilityScope.ExperimentalHotScreen(
             }
         }
 
-        // 每个分支独立 ViewModel key，防止 Paging 状态互相污染
-        key(hotTab) {
-            val viewModel: GalleryListViewModel = viewModel(key = "exp_hot_$hotTab") {
-                val initialLub = when (hotTab) {
+        // 将 3 个固定页签的滚动状态提升到 Pager 外持有，跨页滑出视口再滑回时仍保留原滚动位置
+        val detailListStates = listOf(rememberLazyGridState(), rememberLazyGridState(), rememberLazyGridState())
+        val thumbListStates = listOf(rememberLazyStaggeredGridState(), rememberLazyStaggeredGridState(), rememberLazyStaggeredGridState())
+
+        // 支持左右滑动切换 热门 / 排行 / 订阅，每个页面保留独立 ViewModel 缓存
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+        ) { page ->
+            val viewModel: GalleryListViewModel = viewModel(key = "exp_hot_$page") {
+                val initialLub = when (page) {
                     0 -> ListUrlBuilder(MODE_WHATS_HOT)
                     1 -> ListUrlBuilder(MODE_TOPLIST, keyword = toplists.firstOrNull()?.second ?: "15")
                     else -> ListUrlBuilder(MODE_SUBSCRIPTION)
@@ -154,61 +163,74 @@ fun AnimatedVisibilityScope.ExperimentalHotScreen(
             var urlBuilder by viewModel.urlBuilder
             val data = viewModel.data.collectAsLazyPagingItems()
             FavouriteStatusRouter.Observe(data)
-            val listState = rememberLazyGridState()
-            val gridState = rememberLazyStaggeredGridState()
+            val listState = detailListStates[page]
+            val gridState = thumbListStates[page]
 
-            if (hotTab == 1) {
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(toplists) { (name, keyword) ->
-                        FilterChip(
-                            selected = urlBuilder.keyword == keyword,
-                            onClick = {
-                                Settings.recentToplist = keyword
-                                urlBuilder = ListUrlBuilder(MODE_TOPLIST, keyword = keyword)
-                                data.refresh()
-                            },
-                            label = { Text(text = name) },
-                        )
+            Column(modifier = Modifier.fillMaxSize()) {
+                if (page == 1) {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(toplists) { (name, keyword) ->
+                            FilterChip(
+                                selected = urlBuilder.keyword == keyword,
+                                onClick = {
+                                    Settings.recentToplist = keyword
+                                    urlBuilder = ListUrlBuilder(MODE_TOPLIST, keyword = keyword)
+                                    data.refresh()
+                                },
+                                label = { Text(text = name) },
+                            )
+                        }
                     }
                 }
-            }
 
-            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                GalleryList(
-                    data = data,
-                    contentPadding = PaddingValues(bottom = 12.dp),
-                    listMode = listMode,
-                    detailListState = listState,
-                    detailItemContent = { info ->
-                        GalleryInfoListItem(
-                            onClick = { navigate(info.asDst()) },
-                            onLongClick = { launch { doGalleryInfoAction(info) } },
-                            info = info,
-                            showPages = showPages,
-                            showProgress = showProgress,
-                            modifier = Modifier.height(height),
-                        )
-                    },
-                    thumbListState = gridState,
-                    thumbItemContent = { info ->
-                        GalleryInfoGridItem(
-                            onClick = { navigate(info.asDst()) },
-                            onLongClick = { launch { doGalleryInfoAction(info) } },
-                            info = info,
-                            showPages = showPages,
-                            showProgress = showProgress,
-                        )
-                    },
-                    searchBarOffsetY = { 0 },
-                    onRefresh = {
-                        urlBuilder.setRange(0)
-                        data.refresh()
-                    },
-                    onLoading = {},
-                )
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    GalleryList(
+                        data = data,
+                        contentPadding = PaddingValues(bottom = 12.dp),
+                        listMode = listMode,
+                        detailListState = listState,
+                        detailItemContent = { info ->
+                            GalleryInfoListItem(
+                                onClick = { navigate(info.asDst()) },
+                                onLongClick = { launch { doGalleryInfoAction(info) } },
+                                info = info,
+                                showPages = showPages,
+                                showProgress = showProgress,
+                                modifier = Modifier.height(height),
+                            )
+                        },
+                        thumbListState = gridState,
+                        thumbItemContent = { info ->
+                            GalleryInfoGridItem(
+                                onClick = { navigate(info.asDst()) },
+                                onLongClick = { launch { doGalleryInfoAction(info) } },
+                                info = info,
+                                showPages = showPages,
+                                showProgress = showProgress,
+                            )
+                        },
+                        searchBarOffsetY = { 0 },
+                        errorAction = if (page == 2) {
+                            { error ->
+                                if (error is NoHitsFoundException) {
+                                    Button(onClick = { navigate(MyTagsScreenDestination) }) {
+                                        Text(text = stringResource(R.string.subscription_go_my_tags))
+                                    }
+                                }
+                            }
+                        } else {
+                            null
+                        },
+                        onRefresh = {
+                            urlBuilder.setRange(0)
+                            data.refresh()
+                        },
+                        onLoading = {},
+                    )
+                }
             }
         }
     }

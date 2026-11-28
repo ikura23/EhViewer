@@ -6,8 +6,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.plus
@@ -83,7 +85,8 @@ fun GalleryList(
     thumbItemContent: @Composable (LazyStaggeredGridItemScope.(BaseGalleryInfo) -> Unit),
     searchBarOffsetY: () -> Int,
     scrollToTopOnRefresh: Boolean = true,
-    pinnedHeader: (@Composable () -> Unit)? = null,
+    pinnedGallery: BaseGalleryInfo? = null,
+    errorAction: (@Composable (Throwable) -> Unit)? = null,
     onRefresh: () -> Unit,
     onLoading: () -> Unit,
 ) {
@@ -118,8 +121,8 @@ fun GalleryList(
             is LoadState.NotLoading -> false
         }
         val refreshStateValue = data.loadState.refresh
-        val showInlineRefreshLoading = pinnedHeader != null && refreshStateValue is LoadState.Loading && !isRefreshing
-        val showInlineRefreshError = pinnedHeader != null && refreshStateValue is LoadState.Error
+        val showInlineRefreshLoading = pinnedGallery != null && refreshStateValue is LoadState.Loading && !isRefreshing
+        val showInlineRefreshError = pinnedGallery != null && refreshStateValue is LoadState.Error
         if (listMode == 0) {
             val columnWidth by collectDetailSizeAsState()
             FastScrollLazyVerticalGrid(
@@ -130,9 +133,9 @@ fun GalleryList(
                 verticalArrangement = Arrangement.spacedBy(dimensionResource(com.hippo.ehviewer.R.dimen.gallery_list_interval)),
                 horizontalArrangement = Arrangement.spacedBy(dimensionResource(com.hippo.ehviewer.R.dimen.gallery_list_interval)),
             ) {
-                if (pinnedHeader != null) {
-                    item(key = "pinned_header", span = { GridItemSpan(maxLineSpan) }) {
-                        pinnedHeader()
+                if (pinnedGallery != null) {
+                    item(key = "pinned_${pinnedGallery.gid}") {
+                        detailItemContent(pinnedGallery)
                     }
                 }
                 items(
@@ -182,9 +185,9 @@ fun GalleryList(
                 verticalItemSpacing = gridInterval,
                 horizontalArrangement = Arrangement.spacedBy(gridInterval),
             ) {
-                if (pinnedHeader != null) {
-                    item(key = "pinned_header", span = StaggeredGridItemSpan.FullLine) {
-                        pinnedHeader()
+                if (pinnedGallery != null) {
+                    item(key = "pinned_${pinnedGallery.gid}") {
+                        thumbItemContent(pinnedGallery)
                     }
                 }
                 items(
@@ -237,7 +240,7 @@ fun GalleryList(
                         thumbListState.scrollToItem(0)
                     }
                 }
-                if (pinnedHeader == null) {
+                if (pinnedGallery == null) {
                     Surface {
                         Box(
                             modifier = Modifier.fillMaxSize(),
@@ -248,15 +251,16 @@ fun GalleryList(
                     }
                 }
             }
-            is LoadState.Error -> if (pinnedHeader == null) {
+            is LoadState.Error -> if (pinnedGallery == null) {
                 Surface {
                     ErrorTip(
-                        modifier = Modifier.widthIn(max = 228.dp).clip(ShapeDefaults.Small).clickable { data.retry() },
+                        modifier = Modifier.widthIn(max = 260.dp).clip(ShapeDefaults.Small).clickable { data.retry() },
                         text = state.error.displayString(),
+                        action = errorAction?.let { block -> { block(state.error) } },
                     )
                 }
             }
-            is LoadState.NotLoading -> if (data.itemCount == 0 && pinnedHeader == null) {
+            is LoadState.NotLoading -> if (data.itemCount == 0 && pinnedGallery == null) {
                 // Only for local favorites as empty gallery lists from network are treated as error
                 ErrorTip(modifier = Modifier.widthIn(max = 228.dp), text = stringResource(id = R.string.gallery_list_empty_hit))
             }
@@ -272,7 +276,11 @@ fun GalleryList(
 }
 
 @Composable
-fun ErrorTip(modifier: Modifier = Modifier, text: String) {
+fun ErrorTip(
+    modifier: Modifier = Modifier,
+    text: String,
+    action: (@Composable () -> Unit)? = null,
+) {
     Box(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center,
@@ -292,6 +300,10 @@ fun ErrorTip(modifier: Modifier = Modifier, text: String) {
                 style = MaterialTheme.typography.bodyLarge,
                 textAlign = TextAlign.Center,
             )
+            if (action != null) {
+                Spacer(modifier = Modifier.height(14.dp))
+                action()
+            }
         }
     }
 }

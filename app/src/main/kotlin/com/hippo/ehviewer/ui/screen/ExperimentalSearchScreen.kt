@@ -7,8 +7,6 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -78,6 +76,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -108,6 +107,7 @@ import com.hippo.ehviewer.client.data.ListUrlBuilder
 import com.hippo.ehviewer.collectAsState
 import com.hippo.ehviewer.ui.Screen
 import com.hippo.ehviewer.ui.destinations.ImageSearchScreenDestination
+import com.hippo.ehviewer.ui.experimental.ExperimentalNavEvents
 import com.hippo.ehviewer.ui.experimental.ExperimentalSearchFilterState
 import com.hippo.ehviewer.ui.experimental.RecommendTabMode
 import com.hippo.ehviewer.ui.experimental.RecommendedTagItem
@@ -116,27 +116,27 @@ import com.hippo.ehviewer.ui.main.requestOf
 import com.ramcosta.composedestinations.annotation.Destination
 import com.ramcosta.composedestinations.annotation.RootGraph
 import com.ramcosta.composedestinations.navigation.DestinationsNavigator
-import java.util.Locale
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
 import moe.tarsin.navigate
 
 private val experimentalCategoryEntries = listOf(
-    EhUtils.DOUJINSHI to R.string.doujinshi,
-    EhUtils.MANGA to R.string.manga,
-    EhUtils.ARTIST_CG to R.string.artist_cg,
-    EhUtils.GAME_CG to R.string.game_cg,
-    EhUtils.WESTERN to R.string.western,
-    EhUtils.NON_H to R.string.non_h,
-    EhUtils.IMAGE_SET to R.string.image_set,
-    EhUtils.COSPLAY to R.string.cosplay,
-    EhUtils.ASIAN_PORN to R.string.asian_porn,
-    EhUtils.MISC to R.string.misc,
+    EhUtils.DOUJINSHI to R.string.exp_cat_doujinshi,
+    EhUtils.MANGA to R.string.exp_cat_manga,
+    EhUtils.ARTIST_CG to R.string.exp_cat_artist_cg,
+    EhUtils.GAME_CG to R.string.exp_cat_game_cg,
+    EhUtils.WESTERN to R.string.exp_cat_western,
+    EhUtils.NON_H to R.string.exp_cat_non_h,
+    EhUtils.IMAGE_SET to R.string.exp_cat_image_set,
+    EhUtils.COSPLAY to R.string.exp_cat_cosplay,
+    EhUtils.ASIAN_PORN to R.string.exp_cat_asian_porn,
+    EhUtils.MISC to R.string.exp_cat_misc,
 )
 
 /**
  * 实验性新版搜索页：输入检索 + 高频快捷筛选条 + 推荐标签画幅墙 + 高栏位高级筛选大面板。
  */
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Destination<RootGraph>
 @Composable
 fun AnimatedVisibilityScope.ExperimentalSearchScreen(
@@ -155,6 +155,7 @@ fun AnimatedVisibilityScope.ExperimentalSearchScreen(
     }
     val nonHMode by Settings.nonHMode.collectAsState()
     val gallerySite by Settings.gallerySite.collectAsState()
+    val showTagTranslations by Settings.showTagTranslations.collectAsState()
     val currentTabMode = when (searchSubTab) {
         0 -> RecommendTabMode.TAGS
         1 -> RecommendTabMode.PARODIES
@@ -163,7 +164,31 @@ fun AnimatedVisibilityScope.ExperimentalSearchScreen(
     val searchViewModel: ExperimentalSearchViewModel = viewModel()
     val recommendState by searchViewModel.uiStateFlow(currentTabMode).collectAsState()
 
-    LaunchedEffect(currentTabMode, nonHMode, gallerySite) {
+    val tagsGridState = rememberLazyGridState()
+    val parodiesGridState = rememberLazyGridState()
+    val artistsListState = rememberLazyListState()
+
+    val latestSubTab by rememberUpdatedState(searchSubTab)
+    val latestTabMode by rememberUpdatedState(currentTabMode)
+    val latestNonHMode by rememberUpdatedState(nonHMode)
+    val latestSite by rememberUpdatedState(gallerySite)
+
+    LaunchedEffect(Unit) {
+        val scope = this
+        ExperimentalNavEvents.searchReselected.collect {
+            // 先并行触发滚动回顶与刷新请求，避免等滚动动画结束才发起网络加载
+            searchViewModel.refresh(latestTabMode, latestNonHMode, latestSite)
+            scope.launch {
+                when (latestSubTab) {
+                    0 -> tagsGridState.animateScrollToItem(0)
+                    1 -> parodiesGridState.animateScrollToItem(0)
+                    else -> artistsListState.animateScrollToItem(0)
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(currentTabMode, nonHMode, gallerySite, showTagTranslations) {
         searchViewModel.ensureLoaded(currentTabMode, nonHMode, gallerySite)
     }
 
@@ -476,7 +501,7 @@ fun AnimatedVisibilityScope.ExperimentalSearchScreen(
                     }
                 }
                 searchSubTab == 0 || searchSubTab == 1 -> {
-                    val gridState = rememberLazyGridState()
+                    val gridState = if (searchSubTab == 0) tagsGridState else parodiesGridState
                     LaunchedEffect(
                         gridState,
                         currentTabMode,
@@ -536,7 +561,7 @@ fun AnimatedVisibilityScope.ExperimentalSearchScreen(
                     }
                 }
                 else -> {
-                    val listState = rememberLazyListState()
+                    val listState = artistsListState
                     LaunchedEffect(
                         listState,
                         currentTabMode,
@@ -612,31 +637,35 @@ fun AnimatedVisibilityScope.ExperimentalSearchScreen(
                 }
                 HorizontalDivider()
 
-                // 可滚动多分组筛选表单
+                // 可滚动多分组筛选表单（紧凑双行分类布局，确保分类/评分/页数/语言首屏一并可见）
                 Column(
                     modifier = Modifier
                         .weight(1f, fill = false)
                         .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 20.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                        .padding(horizontal = 20.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    // 1. 分类多选（中文）
+                    // 1. 分类多选（中文，2 行横向紧凑排列）
                     Text(
                         text = stringResource(R.string.key_category),
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
                     )
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        experimentalCategoryEntries.forEach { (bit, titleRes) ->
-                            val selected = filterState.isCategoryChecked(bit)
-                            FilterChip(
-                                selected = selected,
-                                onClick = { filterState = filterState.toggleCategory(bit) },
-                                label = { Text(text = stringResource(titleRes)) },
-                            )
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        experimentalCategoryEntries.chunked(5).forEach { rowEntries ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                rowEntries.forEach { (bit, titleRes) ->
+                                    val selected = filterState.isCategoryChecked(bit)
+                                    FilterChip(
+                                        selected = selected,
+                                        onClick = { filterState = filterState.toggleCategory(bit) },
+                                        label = { Text(text = stringResource(titleRes), maxLines = 1) },
+                                    )
+                                }
+                            }
                         }
                     }
 
@@ -646,7 +675,10 @@ fun AnimatedVisibilityScope.ExperimentalSearchScreen(
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
                     )
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
                         listOf(0, 2, 3, 4, 5).forEach { r ->
                             FilterChip(
                                 selected = filterState.minRating == r,
@@ -675,7 +707,7 @@ fun AnimatedVisibilityScope.ExperimentalSearchScreen(
                                 val v = it.filter(Char::isDigit).toIntOrNull() ?: 0
                                 filterState = filterState.copy(fromPage = v.coerceIn(0, 5000))
                             },
-                            label = { Text(text = "Min") },
+                            label = { Text(text = stringResource(R.string.search_filter_min_pages)) },
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             modifier = Modifier.weight(1f),
@@ -687,13 +719,16 @@ fun AnimatedVisibilityScope.ExperimentalSearchScreen(
                                 val v = it.filter(Char::isDigit).toIntOrNull() ?: 0
                                 filterState = filterState.copy(toPage = v.coerceIn(0, 5000))
                             },
-                            label = { Text(text = "Max") },
+                            label = { Text(text = stringResource(R.string.search_filter_max_pages)) },
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             modifier = Modifier.weight(1f),
                         )
                     }
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
                         val presets = listOf(
                             Triple(0, 0, R.string.any),
                             Triple(0, 20, R.string.search_filter_pages_preset_short),
@@ -705,7 +740,7 @@ fun AnimatedVisibilityScope.ExperimentalSearchScreen(
                             FilterChip(
                                 selected = filterState.fromPage == fp && filterState.toPage == tp,
                                 onClick = { filterState = filterState.copy(fromPage = fp, toPage = tp) },
-                                label = { Text(text = stringResource(resId)) },
+                                label = { Text(text = stringResource(resId), maxLines = 1) },
                             )
                         }
                     }
@@ -716,7 +751,10 @@ fun AnimatedVisibilityScope.ExperimentalSearchScreen(
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
                     )
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
                         listOf(
                             -1 to stringResource(R.string.any),
                             zhIdx to "中文",
@@ -833,9 +871,6 @@ private fun HeroRecommendedTagCard(
     item: RecommendedTagItem,
     onClick: () -> Unit,
 ) {
-    val starBadge = remember(item.coverGallery.rating) {
-        String.format(Locale.US, "★ %.1f", item.coverGallery.rating.coerceIn(0f, 5f))
-    }
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -882,7 +917,7 @@ private fun HeroRecommendedTagCard(
                     modifier = Modifier.size(14.dp),
                 )
                 Text(
-                    text = "${stringResource(R.string.search_rec_hero_badge)} · $starBadge",
+                    text = stringResource(R.string.search_rec_hero_badge),
                     color = Color.White,
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold,
@@ -916,9 +951,6 @@ private fun SquareRecommendedTagCard(
     item: RecommendedTagItem,
     onClick: () -> Unit,
 ) {
-    val starText = remember(item.coverGallery.rating) {
-        String.format(Locale.US, "★%.1f", item.coverGallery.rating.coerceIn(0f, 5f))
-    }
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -948,19 +980,6 @@ private fun SquareRecommendedTagCard(
                     ),
                 ),
         )
-        Surface(
-            modifier = Modifier.align(Alignment.TopStart).padding(6.dp),
-            shape = RoundedCornerShape(8.dp),
-            color = Color.Black.copy(alpha = 0.56f),
-        ) {
-            Text(
-                text = starText,
-                color = Color(0xFFFFD580),
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
-            )
-        }
         Column(
             modifier = Modifier.align(Alignment.BottomCenter).padding(horizontal = 6.dp, vertical = 8.dp),
             horizontalAlignment = Alignment.CenterHorizontally,

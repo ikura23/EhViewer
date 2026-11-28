@@ -1,20 +1,31 @@
 package com.hippo.ehviewer.ui.experimental
 
 import android.content.Context
+import coil3.imageLoader
+import coil3.request.ImageRequest
 import com.ehviewer.core.model.BaseGalleryInfo
 import com.ehviewer.core.model.TagNamespace
 import com.ehviewer.core.util.withIOContext
+import com.hippo.ehviewer.Settings
 import com.hippo.ehviewer.client.EhEngine
+import com.hippo.ehviewer.client.EhTagDatabase
 import com.hippo.ehviewer.client.EhUtils
 import com.hippo.ehviewer.client.data.ListUrlBuilder
 import com.hippo.ehviewer.client.data.ListUrlBuilder.Companion.MODE_NORMAL
 import com.hippo.ehviewer.client.data.ListUrlBuilder.Companion.MODE_TOPLIST
 import com.hippo.ehviewer.client.data.ListUrlBuilder.Companion.MODE_WHATS_HOT
+import com.hippo.ehviewer.coil.ehUrl
 import java.io.File
 import java.util.Locale
 import kotlin.math.absoluteValue
 import kotlin.math.ceil
 import kotlin.math.ln
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -83,6 +94,18 @@ private val NOISE_OTHER_TAGS = setOf(
     "watermarked",
     "pixelated",
     "mosaic censorship",
+    "already uploaded",
+    "rough translation",
+    "machine translated",
+    "rewrite",
+    "variant set",
+    "non-h imageset",
+    "out of order",
+    "missing cover",
+    "poor grammar",
+    "rough grammar",
+    "text cleaned",
+    "speechless",
 )
 
 private val NON_H_BLOCKED_TAGS = setOf(
@@ -90,6 +113,36 @@ private val NON_H_BLOCKED_TAGS = setOf(
     "mosaic censorship",
     "decensored",
 )
+
+private val MALE_RELATED_EXACT = setOf(
+    "males only",
+    "yaoi",
+    "bara",
+    "shotacon",
+    "tomgirl",
+    "crossdressing",
+    "otokonoko",
+    "josou seme",
+    "sole male",
+    "male on dickgirl",
+    "dickgirl on male",
+    "furry male",
+    "dilf",
+    "old man",
+    "bbm",
+    "boys love",
+)
+
+private val MALE_WORD_REGEX = Regex(
+    """\b(male|males|yaoi|shotacon|tomgirl|crossdressing|bara|otokonoko|shota|dilf)\b""",
+    RegexOption.IGNORE_CASE,
+)
+
+private fun isMaleRelatedTag(namespace: String, rawTag: String): Boolean {
+    if (namespace == "male") return true
+    if (rawTag in MALE_RELATED_EXACT) return true
+    return MALE_WORD_REGEX.containsMatchIn(rawTag)
+}
 
 private val GRADIENT_PALETTE = listOf(
     0xFF283593L to 0xFF0D1433L,
@@ -101,6 +154,26 @@ private val GRADIENT_PALETTE = listOf(
     0xFF2E7D32L to 0xFF0C2610L,
     0xFF8D4E2AL to 0xFF2E180BL,
 )
+
+private val SINGLE_TAG_QUERY_REGEX = Regex("""^([a-z]+):(?:"([^"$]+)\$?"|([^\s"$]+)\$?)$""", RegexOption.IGNORE_CASE)
+
+/**
+ * 将单个精确标签查询式（如 `other:"multi-work series$"` 或 `parody:"blue archive$"`）译为易读的标题（如 `其他：系列作品`）；
+ * 若包含多个查询词或未命中翻译则返回 null，回退原始搜索词。
+ */
+internal fun formatSingleTagTitle(
+    keyword: String,
+    translateNs: (String) -> String?,
+    translateTag: (nsPrefix: String?, rawTag: String) -> String?,
+): String? {
+    val match = SINGLE_TAG_QUERY_REGEX.matchEntire(keyword.trim()) ?: return null
+    val rawNs = match.groupValues[1].lowercase(Locale.ROOT)
+    val rawTag = (match.groupValues[2].ifEmpty { match.groupValues[3] }).trim()
+    val ns = TagNamespace.from(rawNs) ?: return null
+    val translatedTag = translateTag(ns.prefix, rawTag)?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+    val translatedNs = translateNs(rawNs)?.trim()?.takeIf { it.isNotEmpty() }
+    return if (translatedNs != null) "$translatedNs：$translatedTag" else "#$translatedTag"
+}
 
 /**
  * 构造 E-Hentai 精准标签搜索表达式；当标签含空格时加双引号并以 `$` 结束确保精确命中。
@@ -115,13 +188,44 @@ internal fun buildTagSearchQuery(namespace: String, rawTag: String): String {
     }
 }
 
-private fun formatRating(rating: Float): String =
-    String.format(Locale.US, "%.1f", rating.coerceIn(0f, 5f))
-
 private fun formatDisplayTag(rawTag: String): String =
     rawTag.split(' ').joinToString(" ") { word ->
         word.replaceFirstChar { ch -> if (ch.isLowerCase()) ch.titlecase(Locale.ROOT) else ch.toString() }
     }
+
+private fun resolveDisplayTagTitle(
+    namespace: String,
+    rawTag: String,
+    translateTag: (nsPrefix: String?, rawTag: String) -> String?,
+): String {
+    val nsPrefix = TagNamespace.from(namespace)?.prefix
+    val translated = translateTag(nsPrefix, rawTag)?.trim()?.takeIf { it.isNotEmpty() }
+    return if (translated != null && !translated.equals(rawTag, ignoreCase = true)) {
+        "#$translated"
+    } else {
+        "#${formatDisplayTag(rawTag)}"
+    }
+}
+
+/**
+ * 依据最新词库或翻译开关状态，动态刷新推荐标签列表的显示标题，避免缓存把未译英文长期固化。
+ */
+internal fun refreshRecommendedTagTitles(
+    items: List<RecommendedTagItem>,
+    translateTag: (nsPrefix: String?, rawTag: String) -> String?,
+): List<RecommendedTagItem> {
+    var changed = false
+    val refreshed = items.map { item ->
+        val newTitle = resolveDisplayTagTitle(item.namespace, item.rawTag, translateTag)
+        if (newTitle == item.displayTitle) {
+            item
+        } else {
+            changed = true
+            item.copy(displayTitle = newTitle)
+        }
+    }
+    return if (changed) refreshed else items
+}
 
 private fun isTagAllowedForMode(
     namespace: String,
@@ -133,13 +237,14 @@ private fun isTagAllowedForMode(
     if (namespace == "language" || namespace == "reclass" || namespace == "temp" || namespace == "location") {
         return false
     }
+    if (isMaleRelatedTag(namespace, rawTag)) return false
     if (namespace == "other" && rawTag in NOISE_OTHER_TAGS) return false
-    if (nonHMode && (namespace in setOf("female", "male", "mixed") || rawTag in NON_H_BLOCKED_TAGS)) {
+    if (nonHMode && (namespace in setOf("female", "mixed") || rawTag in NON_H_BLOCKED_TAGS)) {
         return false
     }
     return when (tabMode) {
-        RecommendTabMode.TAGS -> namespace in setOf("parody", "character", "female", "male", "mixed", "other")
-        RecommendTabMode.PARODIES -> namespace in setOf("parody", "character")
+        RecommendTabMode.TAGS -> namespace in setOf("parody", "character", "female", "mixed", "other")
+        RecommendTabMode.PARODIES -> namespace == "parody"
         RecommendTabMode.ARTISTS -> namespace in setOf("artist", "group")
     }
 }
@@ -150,15 +255,10 @@ private fun namespaceWeight(namespace: String, tabMode: RecommendTabMode): Doubl
         "character" -> 1.20
         "other" -> 1.15
         "female" -> 1.0
-        "male" -> 0.95
         "mixed" -> 0.95
         else -> 0.90
     }
-    RecommendTabMode.PARODIES -> when (namespace) {
-        "parody" -> 1.25
-        "character" -> 1.0
-        else -> 0.9
-    }
+    RecommendTabMode.PARODIES -> 1.25
     RecommendTabMode.ARTISTS -> when (namespace) {
         "artist" -> 1.15
         "group" -> 1.0
@@ -313,14 +413,8 @@ internal fun extractRecommendedTags(
     }
 
     val items = pickedPairs.map { (candidate, cover) ->
-        val nsPrefix = TagNamespace.from(candidate.namespace)?.prefix
-        val translated = translateTag(nsPrefix, candidate.rawTag)?.trim()?.takeIf { it.isNotEmpty() }
-        val displayTitle = if (translated != null && !translated.equals(candidate.rawTag, ignoreCase = true)) {
-            "#$translated"
-        } else {
-            "#${formatDisplayTag(candidate.rawTag)}"
-        }
-        val subtitle = "${candidate.rawTag} · ★${formatRating(cover.rating)}"
+        val displayTitle = resolveDisplayTagTitle(candidate.namespace, candidate.rawTag, translateTag)
+        val subtitle = candidate.rawTag
         val (startArgb, endArgb) = GRADIENT_PALETTE[candidate.tagKey.hashCode().absoluteValue % GRADIENT_PALETTE.size]
 
         RecommendedTagItem(
@@ -470,7 +564,7 @@ internal object ExperimentalRecommendationCache {
     private val json = Json { ignoreUnknownKeys = true }
 
     private fun cacheFile(context: Context, site: Int, nonHMode: Boolean, tabMode: RecommendTabMode): File =
-        File(context.cacheDir, "exp_search_recs_v2_${site}_${if (nonHMode) 1 else 0}_${tabMode.name}.json")
+        File(context.cacheDir, "exp_search_recs_v4_${site}_${if (nonHMode) 1 else 0}_${tabMode.name}.json")
 
     suspend fun load(
         context: Context,
@@ -504,5 +598,76 @@ internal object ExperimentalRecommendationCache {
             file.writeText(json.encodeToString(payload))
         }
         Unit
+    }
+}
+
+/**
+ * 在实验模式下待机空闲时静默预热推荐标签列表与前 6 张封面进磁盘缓存，消除首次点开搜索的等待时间。
+ */
+internal object ExperimentalSearchPrewarmer {
+    private val mutex = Mutex()
+
+    @Volatile
+    private var lastKey: String? = null
+
+    suspend fun prewarm(context: Context, site: Int, nonHMode: Boolean) = withIOContext {
+        val key = "${site}_$nonHMode"
+        mutex.withLock {
+            if (lastKey == key) return@withIOContext
+            val existing = ExperimentalRecommendationCache.load(context, site, nonHMode, RecommendTabMode.TAGS)
+            if (existing != null && existing.second) {
+                lastKey = key
+                return@withIOContext
+            }
+            try {
+                val batch = fetchHighRatedGalleryBatch(
+                    sourceSeed = 0,
+                    nextCursor = null,
+                    nextToplistPage = 2,
+                    usedToplist = false,
+                    canFallbackNormal = false,
+                    nonHMode = nonHMode,
+                    isLoadMore = false,
+                )
+                val extracted = extractRecommendedTags(
+                    galleries = batch.galleries,
+                    tabMode = RecommendTabMode.TAGS,
+                    nonHMode = nonHMode,
+                    maxItems = 16,
+                    translateTag = { nsPrefix, rawTag ->
+                        val canTranslate = Settings.showTagTranslations.value &&
+                            with(context) { EhTagDatabase.translatable } &&
+                            EhTagDatabase.initialized
+                        if (canTranslate) {
+                            EhTagDatabase.getTranslation(nsPrefix, rawTag)
+                        } else {
+                            null
+                        }
+                    },
+                )
+                if (extracted.items.isNotEmpty()) {
+                    ExperimentalRecommendationCache.save(context, site, nonHMode, RecommendTabMode.TAGS, extracted.items)
+                    lastKey = key
+                    val loader = context.imageLoader
+                    extracted.items.take(6).chunked(2).forEach { chunk ->
+                        coroutineScope {
+                            chunk.map { item ->
+                                async {
+                                    try {
+                                        loader.execute(ImageRequest.Builder(context).ehUrl(item.coverGallery).build())
+                                    } catch (ce: CancellationException) {
+                                        throw ce
+                                    } catch (_: Throwable) {
+                                    }
+                                }
+                            }.awaitAll()
+                        }
+                    }
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: Throwable) {
+            }
+        }
     }
 }

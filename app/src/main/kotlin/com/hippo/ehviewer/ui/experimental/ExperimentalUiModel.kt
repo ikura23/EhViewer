@@ -5,6 +5,20 @@ import com.hippo.ehviewer.client.EhUtils
 import com.hippo.ehviewer.client.data.ListUrlBuilder
 import com.hippo.ehviewer.client.data.ListUrlBuilder.Companion.MODE_NORMAL
 import com.hippo.ehviewer.ui.main.AdvanceTable
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+
+/**
+ * 实验模式底部导航重选事件总线：用于在「搜索」Tab 已激活时再次点击触发置顶+刷新。
+ */
+internal object ExperimentalNavEvents {
+    private val _searchReselected = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val searchReselected = _searchReselected.asSharedFlow()
+
+    fun notifySearchReselected() {
+        _searchReselected.tryEmit(Unit)
+    }
+}
 
 /**
  * 实验性新版界面底部 5 个一级导航页签。

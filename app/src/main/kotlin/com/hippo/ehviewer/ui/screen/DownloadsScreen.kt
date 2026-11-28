@@ -877,6 +877,41 @@ fun AnimatedVisibilityScope.DownloadsScreen(navigator: DestinationsNavigator) = 
                         )
                     },
                 )
+                FilterChip(
+                    selected = false,
+                    enabled = list.isNotEmpty(),
+                    onClick = {
+                        if (list.isNotEmpty()) {
+                            onItemClick(list.random())
+                        }
+                    },
+                    label = { Text(text = stringResource(R.string.download_quick_random)) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Shuffle,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    },
+                )
+                FilterChip(
+                    selected = gridView,
+                    onClick = { gridView = !gridView },
+                    label = {
+                        Text(
+                            text = stringResource(
+                                if (gridView) R.string.settings_eh_list_mode_thumb else R.string.settings_eh_list_mode_detail,
+                            ),
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = if (gridView) Icons.Default.GridView else Icons.AutoMirrored.Default.ViewList,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    },
+                )
             }
         }
 

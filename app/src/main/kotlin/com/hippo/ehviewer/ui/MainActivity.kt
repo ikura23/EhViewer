@@ -175,6 +175,8 @@ import com.hippo.ehviewer.ui.destinations.SignInScreenDestination
 import com.hippo.ehviewer.ui.destinations.SubscriptionScreenDestination
 import com.hippo.ehviewer.ui.destinations.ToplistScreenDestination
 import com.hippo.ehviewer.ui.destinations.WhatshotScreenDestination
+import com.hippo.ehviewer.ui.experimental.ExperimentalNavEvents
+import com.hippo.ehviewer.ui.experimental.ExperimentalSearchPrewarmer
 import com.hippo.ehviewer.ui.experimental.shouldShowExperimentalBottomBar
 import com.hippo.ehviewer.ui.screen.asDst
 import com.hippo.ehviewer.ui.screen.asDstWith
@@ -421,7 +423,16 @@ class MainActivity : AppCompatActivity() {
             val needSignIn by Settings.needSignIn.collectAsState()
             val launchPage by Settings.launchPage.collectAsState()
             val experimentalNewUi by Settings.experimentalNewUi.collectAsState()
+            val gallerySite by Settings.gallerySite.collectAsState()
+            val nonHMode by Settings.nonHMode.collectAsState()
             val runningDownloads by DownloadManager.collectRunningCount()
+
+            LaunchedEffect(experimentalNewUi, gallerySite, nonHMode) {
+                if (experimentalNewUi) {
+                    kotlinx.coroutines.delay(1500)
+                    ExperimentalSearchPrewarmer.prewarm(applicationContext, gallerySite, nonHMode)
+                }
+            }
             val scanProgress by LocalGalleryScanner.scanProgress.collectAsState()
             val updateProgress by GalleryUpdateTracker.progress.collectAsState()
             // 使用 rememberSaveable 记录已消费事件号，避免配置变化或重建 Activity 时重弹历史提示
@@ -506,8 +517,12 @@ class MainActivity : AppCompatActivity() {
                                     NavigationBarItem(
                                         selected = selected,
                                         onClick = {
-                                            navigator.navigate(direction) {
-                                                launchSingleTop = true
+                                            if (selected && direction == ExperimentalSearchScreenDestination) {
+                                                ExperimentalNavEvents.notifySearchReselected()
+                                            } else {
+                                                navigator.navigate(direction) {
+                                                    launchSingleTop = true
+                                                }
                                             }
                                         },
                                         icon = {

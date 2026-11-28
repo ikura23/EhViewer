@@ -734,7 +734,19 @@
     <string name="search_rec_retry">重试</string>
     <string name="search_rec_refresh_hint">下拉换一批 · 已推荐 %1$d 个标签</string>
     <string name="search_rec_non_h_badge">Non-H 模式</string>
-    <string name="search_pinned_cover_badge">封面原作品</string>
-    <string name="search_pinned_cover_hint">点击直达详情</string>
+    <string name="exp_cat_doujinshi">同人志</string>
+    <string name="exp_cat_manga">漫画</string>
+    <string name="exp_cat_artist_cg">画师 CG</string>
+    <string name="exp_cat_game_cg">游戏 CG</string>
+    <string name="exp_cat_western">欧美</string>
+    <string name="exp_cat_non_h">非 H</string>
+    <string name="exp_cat_image_set">图集</string>
+    <string name="exp_cat_cosplay">Cosplay</string>
+    <string name="exp_cat_asian_porn">亚洲</string>
+    <string name="exp_cat_misc">杂项</string>
+    <string name="search_filter_min_pages">最小页数</string>
+    <string name="search_filter_max_pages">最大页数</string>
+    <string name="download_quick_random">随机阅读</string>
+    <string name="subscription_go_my_tags">前往订阅我的标签</string>
     <!-- Tachiyomi Reader End-->
 </resources>

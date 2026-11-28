@@ -752,7 +752,19 @@
     <string name="search_rec_retry">Retry</string>
     <string name="search_rec_refresh_hint">Pull to refresh · %1$d tags</string>
     <string name="search_rec_non_h_badge">Non-H Safe</string>
-    <string name="search_pinned_cover_badge">Featured cover work</string>
-    <string name="search_pinned_cover_hint">Tap to open directly</string>
+    <string name="exp_cat_doujinshi">Doujinshi</string>
+    <string name="exp_cat_manga">Manga</string>
+    <string name="exp_cat_artist_cg">Artist CG</string>
+    <string name="exp_cat_game_cg">Game CG</string>
+    <string name="exp_cat_western">Western</string>
+    <string name="exp_cat_non_h">Non-H</string>
+    <string name="exp_cat_image_set">Image Set</string>
+    <string name="exp_cat_cosplay">Cosplay</string>
+    <string name="exp_cat_asian_porn">Asian Porn</string>
+    <string name="exp_cat_misc">Misc</string>
+    <string name="search_filter_min_pages">Min pages</string>
+    <string name="search_filter_max_pages">Max pages</string>
+    <string name="download_quick_random">Random</string>
+    <string name="subscription_go_my_tags">Manage My Tags</string>
     <!-- Tachiyomi Reader End-->
 </resources>

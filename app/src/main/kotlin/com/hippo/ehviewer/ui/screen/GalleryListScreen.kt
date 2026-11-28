@@ -5,7 +5,6 @@ import android.view.ViewConfiguration
 import androidx.activity.compose.ReportDrawnWhen
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,7 +22,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -48,7 +46,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.SwipeToDismissBoxDefaults
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
@@ -76,7 +73,6 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringArrayResource
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.fastForEach
 import androidx.lifecycle.createSavedStateHandle
@@ -126,6 +122,7 @@ import com.hippo.ehviewer.ui.awaitSelectDate
 import com.hippo.ehviewer.ui.destinations.FavouritesScreenDestination
 import com.hippo.ehviewer.ui.destinations.ProgressScreenDestination
 import com.hippo.ehviewer.ui.doGalleryInfoAction
+import com.hippo.ehviewer.ui.experimental.formatSingleTagTitle
 import com.hippo.ehviewer.ui.main.AdvancedSearchOption
 import com.hippo.ehviewer.ui.main.AvatarIcon
 import com.hippo.ehviewer.ui.main.GalleryInfoGridItem
@@ -572,51 +569,6 @@ fun AnimatedVisibilityScope.GalleryListScreen(
                 }
             }
         }
-        val pinnedHeaderBlock: (@Composable () -> Unit)? = activePinnedGallery?.let { pinned ->
-            {
-                Surface(
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
-                    shape = RoundedCornerShape(14.dp),
-                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
-                ) {
-                    Column(modifier = Modifier.fillMaxWidth().padding(6.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Whatshot,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(15.dp),
-                            )
-                            Text(
-                                text = stringResource(R.string.search_pinned_cover_badge),
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.weight(1f),
-                            )
-                            Text(
-                                text = stringResource(R.string.search_pinned_cover_hint),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        GalleryInfoListItem(
-                            onClick = { navigate(pinned.asDst()) },
-                            onLongClick = { launch { doGalleryInfoAction(pinned) } },
-                            info = pinned,
-                            showPages = showPages,
-                            showProgress = showProgress,
-                            modifier = Modifier.height(height),
-                        )
-                    }
-                }
-            }
-        }
         GalleryList(
             data = data,
             contentModifier = Modifier.nestedScroll(searchBarConnection),
@@ -644,7 +596,7 @@ fun AnimatedVisibilityScope.GalleryListScreen(
                 )
             },
             searchBarOffsetY = { searchBarOffsetY },
-            pinnedHeader = pinnedHeaderBlock,
+            pinnedGallery = activePinnedGallery,
             onRefresh = {
                 urlBuilder.setRange(0)
                 data.refresh()
@@ -736,7 +688,18 @@ private fun getSuitableTitleForUrlBuilder(urlBuilder: ListUrlBuilder, appName: B
                 wrapTagKeyword(keyword, canTranslate)
             }
             MODE_UPLOADER -> "uploader:\"$keyword\""
-            else -> keyword
+            else -> {
+                val canTranslate = Settings.showTagTranslations.value && EhTagDatabase.translatable && EhTagDatabase.initialized
+                if (canTranslate) {
+                    formatSingleTagTitle(
+                        keyword = keyword,
+                        translateNs = { ns -> EhTagDatabase.getTranslation(tag = ns) },
+                        translateTag = { nsPrefix, rawTag -> EhTagDatabase.getTranslation(nsPrefix, rawTag) },
+                    ) ?: keyword
+                } else {
+                    keyword
+                }
+            }
         }
     } else if (category == EhUtils.NONE && urlBuilder.advanceSearch == -1) {
         val appNameStr = stringResource(R.string.app_name)
