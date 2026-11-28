@@ -10,7 +10,9 @@ pub fn create_decoder(data: &[u8]) -> *mut WebPAnimDecoder {
 
 pub(crate) unsafe fn get_image_info(dec: *const WebPAnimDecoder) -> WebPAnimInfo {
     let mut info = unsafe { zeroed() };
-    let _ = unsafe { WebPAnimDecoderGetInfo(dec, &mut info) };
+    if unsafe { WebPAnimDecoderGetInfo(dec, &mut info) } == 0 {
+        return unsafe { zeroed() };
+    }
     info
 }
 

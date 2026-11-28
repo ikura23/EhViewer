@@ -1,4 +1,4 @@
-Derived from FooIbar and refined via vibe coding, issues welcome: https://github.com/FooIbar/EhViewer
+Derived from FooIbar and refined via vibe coding, issues welcome: https://github.com/ikura23/EhViewer/issues
 
 <p align="right">
   <a href="/README.md">

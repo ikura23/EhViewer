@@ -1,4 +1,4 @@
-源自FooIbar，用vibe coding優化並發布，歡迎提issues https://github.com/FooIbar/EhViewer
+源自FooIbar，用vibe coding優化並發布，歡迎提issues https://github.com/ikura23/EhViewer/issues
 
 <p align="right">
   <a href="/README.md">

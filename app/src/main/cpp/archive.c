@@ -462,6 +462,9 @@ Java_com_hippo_ehviewer_jni_ArchiveKt_archiveFdBatch(JNIEnv *env, jclass clazz, 
     if (size <= 0) {
         return JNI_FALSE;
     }
+    if (!fd_batch || !names || (*env)->GetArrayLength(env, fd_batch) < size || (*env)->GetArrayLength(env, names) < size) {
+        return JNI_FALSE;
+    }
     struct archive *arc = archive_write_new();
     struct archive_entry *entry = archive_entry_new();
     if (!arc || !entry) {
@@ -479,7 +482,16 @@ Java_com_hippo_ehviewer_jni_ArchiveKt_archiveFdBatch(JNIEnv *env, jclass clazz, 
     for (int i = 0; ok && i < size; i++) {
         int fd = fdBatch[i];
         jobject name = (*env)->GetObjectArrayElement(env, names, i);
+        if (!name) {
+            ok = false;
+            break;
+        }
         const char *cname = (*env)->GetStringUTFChars(env, name, false);
+        if (!cname) {
+            (*env)->DeleteLocalRef(env, name);
+            ok = false;
+            break;
+        }
         archive_entry_set_pathname(entry, cname);
         (*env)->ReleaseStringUTFChars(env, name, cname);
         (*env)->DeleteLocalRef(env, name);
@@ -493,6 +505,7 @@ Java_com_hippo_ehviewer_jni_ArchiveKt_archiveFdBatch(JNIEnv *env, jclass clazz, 
             ok = false;
             break;
         }
+        (void) lseek(fd, 0, SEEK_SET);
         ssize_t len;
         while ((len = read(fd, buff, sizeof(buff))) > 0) {
             ssize_t offset = 0;

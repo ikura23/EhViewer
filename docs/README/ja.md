@@ -1,4 +1,4 @@
-源自FooIbar，用vibe coding最適化・公開（Issues歓迎: https://github.com/FooIbar/EhViewer ）
+源自FooIbar，用vibe coding最適化・公開（Issues歓迎: https://github.com/ikura23/EhViewer/issues ）
 
 <p align="right">
   <a href="/README.md">

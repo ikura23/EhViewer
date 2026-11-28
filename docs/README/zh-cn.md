@@ -1,4 +1,4 @@
-源自FooIbar，用vibe coding优化并发布，欢迎提issues https://github.com/FooIbar/EhViewer
+源自FooIbar，用vibe coding优化并发布，欢迎提issues https://github.com/ikura23/EhViewer/issues
 
 <p align="right">
   <strong>简体中文</strong>

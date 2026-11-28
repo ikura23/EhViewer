@@ -11,3 +11,9 @@ build
 .private-signing/
 *.jks
 signing.properties
+release-assets/
+*.apk
+*.aab
+*.keystore
+*.p12
+app/src/main/rust/target/

@@ -720,6 +720,12 @@
     <string name="search_filter_max_pages">最大頁數</string>
     <string name="download_quick_random">隨機閱讀</string>
     <string name="subscription_go_my_tags">前往訂閱我的標籤</string>
+    <string name="pref_image_enhance">畫質增強 (GPU)</string>
+    <string name="image_enhance_off">關閉</string>
+    <string name="image_enhance_sharpen">清晰銳化</string>
+    <string name="image_enhance_anime">動漫增強</string>
+    <string name="pref_image_enhance_strength">增強強度</string>
+    <string name="image_enhance_requires_android_13">需要 Android 13 及以上系統支援</string>
     <!-- Tachiyomi Reader End-->
 </resources>
 
